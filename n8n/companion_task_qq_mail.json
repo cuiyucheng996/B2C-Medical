@@ -1,0 +1,235 @@
+{
+  "id": "4KANlybwL9uaiojs",
+  "name": "uvgraph-b2c-companion-task",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "companion-task",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wh-companion-task",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-160, 0],
+      "webhookId": "uvgraph-companion-task"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 把陪聊推来的 payload 归一成邮件所需的 subject / text / when\n// kind 必须与 B2C src/tools/companion_tools.py 的 TASK_KINDS 一致\nconst KINDS = {\n  remind:      { prefix: '【复查提醒】', lead: '复查或随访提醒' },\n  checkin:     { prefix: '【打卡】',     lead: '打卡记录' },\n  medication:  { prefix: '【服药提醒】', lead: '服药提醒' },\n  appointment: { prefix: '【复诊预约】', lead: '复诊预约提醒' },\n  report:      { prefix: '【取报告】',   lead: '领取检查报告提醒' },\n};\nconst DEFAULTS = {\n  remind: '复查或随访',\n  checkin: '健康打卡',\n  medication: '按时服药',\n  appointment: '复诊挂号',\n  report: '领取检查报告',\n};\n\nconst src = $input.first().json;\nconst body = src.body && typeof src.body === 'object' ? src.body : src;\n\nconst kind = String(body.kind || 'remind').trim();\nconst meta = KINDS[kind] || KINDS.remind;\nconst fallbackTitle = DEFAULTS[kind] || DEFAULTS.remind;\n\nconst title = String(body.title || body.query || fallbackTitle).trim().slice(0, 120);\nconst whenText = String(body.when_text || '').trim();\n\nlet at = DateTime.fromISO(String(body.start_iso || '').trim(), { zone: 'Asia/Shanghai' });\nif (!at.isValid) {\n  at = DateTime.now().setZone('Asia/Shanghai');\n  if (kind !== 'checkin') at = at.plus({ days: 7 });\n}\nconst when = kind === 'checkin' ? at.toFormat('yyyy-LL-dd HH:mm') : at.toFormat('yyyy-LL-dd');\n\nconst lines = [\n  `${meta.prefix}${title}`,\n  `时间：${when}`,\n  whenText ? `你说的：${whenText}` : '',\n  body.user_id ? `用户：${body.user_id}` : '',\n  body.query ? `原话：${body.query}` : '',\n  '',\n  `（${meta.lead}，来自健康陪聊）`,\n];\n\nreturn [{ json: {\n  kind,\n  prefix: meta.prefix,\n  title,\n  when,\n  subject: `${meta.prefix}${title}`.slice(0, 120),\n  text: lines.filter(Boolean).join('\\n'),\n  user_id: body.user_id || '',\n  query: body.query || '',\n} }];"
+      },
+      "id": "code-normalize",
+      "name": "Normalize payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, 0]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  {
+                    "id": "sw-remind",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "remind",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "remind"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  {
+                    "id": "sw-checkin",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "checkin",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "checkin"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  {
+                    "id": "sw-medication",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "medication",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "medication"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  {
+                    "id": "sw-appointment",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "appointment",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "appointment"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+                "conditions": [
+                  {
+                    "id": "sw-report",
+                    "leftValue": "={{ $json.kind }}",
+                    "rightValue": "report",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "report"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": 4 }
+      },
+      "id": "switch-kind",
+      "name": "Switch kind",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [320, 0]
+    },
+    {
+      "parameters": {
+        "fromEmail": "2033724580@qq.com",
+        "toEmail": "2033724580@qq.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "mail-remind",
+      "name": "QQ 邮件 复查提醒",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [640, -320],
+      "credentials": {
+        "smtp": { "id": "NLN6nwrMWySFLYUH", "name": "SMTP account" }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "2033724580@qq.com",
+        "toEmail": "2033724580@qq.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "mail-checkin",
+      "name": "QQ 邮件 打卡",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [640, -160],
+      "credentials": {
+        "smtp": { "id": "NLN6nwrMWySFLYUH", "name": "SMTP account" }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "2033724580@qq.com",
+        "toEmail": "2033724580@qq.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "mail-medication",
+      "name": "QQ 邮件 服药提醒",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [640, 0],
+      "credentials": {
+        "smtp": { "id": "NLN6nwrMWySFLYUH", "name": "SMTP account" }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "2033724580@qq.com",
+        "toEmail": "2033724580@qq.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "mail-appointment",
+      "name": "QQ 邮件 复诊预约",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [640, 160],
+      "credentials": {
+        "smtp": { "id": "NLN6nwrMWySFLYUH", "name": "SMTP account" }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "2033724580@qq.com",
+        "toEmail": "2033724580@qq.com",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": { "appendAttribution": false }
+      },
+      "id": "mail-report",
+      "name": "QQ 邮件 取报告",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [640, 320],
+      "credentials": {
+        "smtp": { "id": "NLN6nwrMWySFLYUH", "name": "SMTP account" }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Normalize payload", "type": "main", "index": 0 }]]
+    },
+    "Normalize payload": {
+      "main": [[{ "node": "Switch kind", "type": "main", "index": 0 }]]
+    },
+    "Switch kind": {
+      "main": [
+        [{ "node": "QQ 邮件 复查提醒", "type": "main", "index": 0 }],
+        [{ "node": "QQ 邮件 打卡", "type": "main", "index": 0 }],
+        [{ "node": "QQ 邮件 服药提醒", "type": "main", "index": 0 }],
+        [{ "node": "QQ 邮件 复诊预约", "type": "main", "index": 0 }],
+        [{ "node": "QQ 邮件 取报告", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "meta": { "templateCredsSetupCompleted": false }
+}

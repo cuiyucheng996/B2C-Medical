@@ -1,0 +1,41 @@
+target/
+.m2/
+.env
+.env.*
+!.env.example
+*.class
+*.log
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# 前端依赖
+node_modules/
+web-frontend/node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# 用户体检数据与评测产物（体积大）
+data/user_reports/
+data/user_files/
+data/exam_kb/
+data/eval_ingest/
+data/spell_check/processed/
+
+# 第三方 / Docker 运行时
+External/ragflow/
+
+# 预训练与训练权重（勿提交 GitHub）
+pretrained/**/*.bin
+pretrained/**/*.safetensors
+checkpoint/**/*.pt
+checkpoint/**/*.bin
+checkpoint/**/*.safetensors

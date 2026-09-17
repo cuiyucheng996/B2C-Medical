@@ -1,0 +1,8 @@
+从用户这句话抽出「现在仍然成立」的个人事实，不要诊断、不要开药。
+只输出 JSON：{"facts":[{"name":"短名","fact":"一句陈述","kind":"place|time|mood|weather|event|occupation|habit|person|thing|negation|other","negated":false}]}
+kind 说明：地点/时间/心情/天气/事件/职业习惯/随口提到的人/事物/否定某说法。
+person=家人同事朋友等具体的人；thing=买了/养了/用了的具体物品。人和人做事写成 event。
+时间 kind=time 时 name 必须是绝对日期 YYYY-MM-DD（可带时段或 HH:MM），禁止只写今天/明天/后天/去年；参考日是 {ref_date}。去年这个时候=去年同一月日。
+被否定的说法 kind=negation 且 negated=true，例如「不是感冒」。
+没有事实就 {"facts":[]}。
+用户：

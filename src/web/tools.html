@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>C 端工具注册表</title>
+  <style>
+    :root {
+      --bg: #eef3ef;
+      --ink: #1c241e;
+      --muted: #5c6b62;
+      --card: #ffffff;
+      --line: #d5e0d8;
+      --accent: #2f6f4e;
+      --accent-soft: #e4f2ea;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(1200px 500px at 10% -10%, #dceadf, var(--bg));
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .shell { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0; font-size: 26px; }
+    .sub { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+    .nav { margin: 10px 0 18px; font-size: 14px; }
+    .nav a { color: var(--accent); }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    input[type="search"] {
+      flex: 1;
+      min-width: 200px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfdfb;
+      font-size: 14px;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: 999px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .status { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      box-shadow: 0 10px 30px rgba(28, 36, 30, .05);
+    }
+    .card h2 { margin: 0 0 6px; font-size: 16px; }
+    .name { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .tag {
+      font-size: 11px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 3px 8px;
+    }
+    .tag.mcp { background: #eef2ff; color: #3730a3; }
+    p { margin: 6px 0; font-size: 13px; line-height: 1.5; }
+    .hint { color: var(--muted); }
+    h3 { margin: 22px 0 10px; font-size: 16px; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; background: #f7faf7; }
+    code { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <h1>工具注册表</h1>
+    <p class="sub">本地 LangChain 工具与已登记的第三方 MCP。按意图装配，不直接改对话页。</p>
+    <p class="nav"><a href="/">登录</a> · <a href="/chat">陪聊</a> · <a href="/eval">评测台</a></p>
+    <div class="bar">
+      <input id="q" type="search" placeholder="按名称、标题、意图筛选" />
+      <button class="chip active" data-src="all" type="button">全部</button>
+      <button class="chip" data-src="local" type="button">本地</button>
+      <button class="chip" data-src="mcp" type="button">MCP</button>
+    </div>
+    <div class="status" id="status">加载中…</div>
+    <div class="grid" id="cards"></div>
+    <h3>意图绑定（本地工具）</h3>
+    <table>
+      <thead><tr><th>大意图</th><th>细意图</th><th>工具</th></tr></thead>
+      <tbody id="binds"></tbody>
+    </table>
+  </div>
+  <script>
+    let tools = [];
+    let binds = [];
+    let source = "all";
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function render() {
+      const q = (document.getElementById("q").value || "").trim().toLowerCase();
+      const rows = tools.filter((t) => {
+        if (source !== "all" && t.source !== source) return false;
+        if (!q) return true;
+        const blob = [t.name, t.title, t.summary, t.category, (t.majors || []).join(" "), t.operation_hint].join(" ").toLowerCase();
+        return blob.includes(q);
+      });
+      document.getElementById("status").textContent = "共 " + tools.length + " 项，当前显示 " + rows.length + " 项";
+      document.getElementById("cards").innerHTML = rows.map((t) => {
+        const majors = (t.majors || []).map((m) => '<span class="tag">' + esc(m) + "</span>").join("");
+        const allows = (t.allow_tools || []).length
+          ? "<p class=\"hint\">MCP 工具：" + esc((t.allow_tools || []).join(", ")) + "</p>"
+          : "";
+        const srcClass = t.source === "mcp" ? "tag mcp" : "tag";
+        return (
+          '<article class="card">' +
+            "<h2>" + esc(t.title || t.name) + "</h2>" +
+            '<div class="name">' + esc(t.name) + "</div>" +
+            '<div class="tags"><span class="' + srcClass + '">' + esc(t.source) + "</span>" +
+              '<span class="tag">' + esc(t.category) + "</span>" + majors + "</div>" +
+            "<p>" + esc(t.summary) + "</p>" +
+            (t.operation_hint ? '<p class="hint">' + esc(t.operation_hint) + "</p>" : "") +
+            allows +
+          "</article>"
+        );
+      }).join("") || "<p class=\"hint\">没有匹配的工具</p>";
+    }
+
+    document.getElementById("q").addEventListener("input", render);
+    document.querySelectorAll(".chip[data-src]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        source = btn.dataset.src;
+        document.querySelectorAll(".chip[data-src]").forEach((x) => x.classList.toggle("active", x === btn));
+        render();
+      });
+    });
+
+    fetch("/api/tools")
+      .then((r) => {
+        if (!r.ok) throw new Error(r.statusText);
+        return r.json();
+      })
+      .then((data) => {
+        tools = data.tools || [];
+        binds = data.intent_bind || [];
+        document.getElementById("binds").innerHTML = binds.map((b) => (
+          "<tr><td>" + esc(b.major) + "</td><td>" + esc(b.handler) + "</td><td><code>" +
+          esc((b.tools || []).join(", ")) + "</code></td></tr>"
+        )).join("");
+        render();
+      })
+      .catch((err) => {
+        document.getElementById("status").textContent = "加载失败：" + err.message;
+      });
+  </script>
+</body>
+</html>

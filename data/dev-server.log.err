@@ -1,0 +1,22 @@
+INFO:     Will watch for changes in these directories: ['D:\\program\\uvgraph\\uvgraph\\B2C business\\src']
+INFO:     Uvicorn running on http://127.0.0.1:8002 (Press CTRL+C to quit)
+INFO:     Started reloader process [10652] using WatchFiles
+INFO:     Started server process [27956]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'B2C business\src\algorithm\ragflow_eval.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [27956]
+WARNING:  WatchFiles detected changes in 'B2C business\src\web\eval.html', 'B2C business\src\api\server.py', 'B2C business\src\algorithm\ragflow_eval.py'. Reloading...
+INFO:     Started server process [27872]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [27872]
+INFO:     Started server process [22628]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.

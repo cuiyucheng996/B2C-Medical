@@ -1,0 +1,325 @@
+{
+  "name": "04差评批量分析",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -304,
+        -32
+      ],
+      "id": "85716540-f109-455a-8b5b-67784789237c",
+      "name": "When clicking ‘Execute workflow’",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  rp.asin,\n  rp.brand,\n  pr.review_text,\n  pr.rate\nFROM raw_products rp\nINNER JOIN product_reviews pr ON rp.asin = pr.asin\nWHERE pr.rate <= 3 \n   and rp.asin IN ('B0FFDYB7K8', 'B0DFYF2D7D', 'B0CGRQTH9P', 'B07WZPJ2LW')\n  AND pr.crawl_date = CURDATE()   -- ← 加这一行\nORDER BY rp.asin DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -64,
+        16
+      ],
+      "id": "afd0a7cc-c458-4c12-8ea4-ea25b5d137f8",
+      "name": "节点 1：MySQL — 拉取所有竞品的 1~3 星差评",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldsToSummarize": {
+          "values": [
+            {
+              "aggregation": "append",
+              "field": "review_text"
+            }
+          ]
+        },
+        "fieldsToSplitBy": "asin,brand",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.summarize",
+      "typeVersion": 1.1,
+      "position": [
+        144,
+        16
+      ],
+      "id": "f778be27-cb38-4240-ac50-ed89851ce770",
+      "name": "节点 2：Summarize — 把同一商品的多条差评聚合"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        352,
+        16
+      ],
+      "id": "761e8206-3e6b-40c0-a1eb-fbcfd941e944",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d7af7686-9cb6-4308-a25a-153e191a104b",
+              "name": "all_reviews",
+              "value": "=\"以下是商品的所有差评：\\n\\n{{$json.appended_review_text.join('\\n---\\n')}}\\n\\n请提取核心痛点，返回严格 JSON：\\n{\\n  \\\"top_pain_points\\\": [\\\"痛点1\\\", \\\"痛点2\\\", \\\"痛点3\\\"],\\n  \\\"pain_summary\\\": \\\"一句话总结\\\",\\n  \\\"improvement_suggestions\\\": [\\\"建议1\\\", \\\"建议2\\\"]\\n}\\n仅返回 JSON。\"",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        160
+      ],
+      "id": "92e62835-b497-4468-bb4a-a2e0e91076f8",
+      "name": "节点 4：Set — 构建LLM差评分析提示词"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen3.7-max\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"你是亚马逊商品评论分析专家。请只输出 JSON。\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.all_reviews) }}\n    }\n  ],\n  \"temperature\": 0.3,\n  \"response_format\": { \"type\": \"json_object\" }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        768,
+        160
+      ],
+      "id": "fcbfcdd0-e1dc-48cd-ac2c-08a52dcdd8ad",
+      "name": "节点 5：HTTP Request — LLM 提取差评痛点",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "6dxHYr4edgt8Xv9w",
+          "name": "Bearer千问"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "67d6027f-1ff3-4bbe-b30e-50131a126a79",
+              "name": "asin",
+              "value": "={{ $('Loop Over Items').item.json.asin }}",
+              "type": "string"
+            },
+            {
+              "id": "a108fe16-b893-4e2b-8d77-d66d6303db6f",
+              "name": "pain_points",
+              "value": "={{ JSON.parse($json.choices[0].message.content).top_pain_points.join(\"|\") }}",
+              "type": "string"
+            },
+            {
+              "id": "4ed88360-8dfb-4a72-9d12-6775ec745428",
+              "name": "pain_summary",
+              "value": "={{ JSON.parse($json.choices[0].message.content).pain_summary }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        976,
+        160
+      ],
+      "id": "f03bf8a9-6082-4777-b881-53b02ec4925c",
+      "name": "节点 6：Edit Fields — 解析返回"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE raw_products \nSET \n  pain_points = '{{ $json.pain_points }}',\n  pain_summary = '{{ $json.pain_summary }}'\nWHERE asin = '{{ $json.asin }}'\n  AND crawl_date = CURDATE();   -- ← 加这一行",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        1184,
+        160
+      ],
+      "id": "ca1ade2c-fc82-4560-aba2-385d795075cd",
+      "name": "节点 7：MySQL — 写回 raw_products 表",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn [\n  {\n    json: {\n      success: items.every(item => item.json.success === true),\n      count: items.length,\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        -80
+      ],
+      "id": "4b2ebe09-c527-41c6-b1ce-d020b120e427",
+      "name": "节点 8：Code — 输出最终结果（End）"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -288,
+        224
+      ],
+      "id": "87f4e3d9-3c9b-4dd2-8dcd-c750fa55f068",
+      "name": "When Executed by Another Workflow"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "节点 1：MySQL — 拉取所有竞品的 1~3 星差评",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 1：MySQL — 拉取所有竞品的 1~3 星差评": {
+      "main": [
+        [
+          {
+            "node": "节点 2：Summarize — 把同一商品的多条差评聚合",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 2：Summarize — 把同一商品的多条差评聚合": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "节点 8：Code — 输出最终结果（End）",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "节点 4：Set — 构建LLM差评分析提示词",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 4：Set — 构建LLM差评分析提示词": {
+      "main": [
+        [
+          {
+            "node": "节点 5：HTTP Request — LLM 提取差评痛点",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 5：HTTP Request — LLM 提取差评痛点": {
+      "main": [
+        [
+          {
+            "node": "节点 6：Edit Fields — 解析返回",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 6：Edit Fields — 解析返回": {
+      "main": [
+        [
+          {
+            "node": "节点 7：MySQL — 写回 raw_products 表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 7：MySQL — 写回 raw_products 表": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "节点 1：MySQL — 拉取所有竞品的 1~3 星差评",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "a5799758-49df-4e92-93cc-dd771ecbb72b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "13de77a588de45dd6bf86ec1cf85fd89ff448f07bbfba708e13f9522ad29d1b8"
+  },
+  "id": "dkhP7V_G5wdkBFVMsqNdT",
+  "tags": []
+}

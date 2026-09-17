@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>纠错 Agent 测试</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      max-width: 920px;
+      margin: 32px auto;
+      padding: 0 16px;
+      color: #1a1a1a;
+      background: #f6f8fa;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 8px; }
+    .hint { color: #666; font-size: 0.9rem; margin-bottom: 20px; }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    label { display: block; font-weight: 600; margin-bottom: 8px; }
+    textarea {
+      width: 100%;
+      min-height: 88px;
+      padding: 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 1rem;
+      resize: vertical;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.95rem;
+    }
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #e5e7eb; color: #111; }
+    .preset { background: #eef2ff; color: #3730a3; }
+    .status { margin-top: 10px; font-size: 0.9rem; color: #666; }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 14px;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      min-height: 120px;
+    }
+    .expect {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #fffbeb;
+      border-left: 4px solid #f59e0b;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>纠错 Agent 测试页</h1>
+  <p class="hint">调用 <code>agent/spell_check_agent.py</code>，返回结构化 <code>CorrectionResult</code> JSON。</p>
+
+  <div class="card">
+    <label for="text">输入文本</label>
+    <textarea id="text" placeholder="输入待纠错文本…"></textarea>
+    <div class="actions">
+      <button class="primary" id="runBtn">运行纠错</button>
+      <button class="preset" data-case="case1" data-text="我觉的每个人都应该买一个。" data-expect="识别「的→得」的语法错误">用例1：的→得</button>
+      <button class="preset" data-case="case2" data-text="今天天气很好。" data-expect="errors 为空，confidence 接近 1.0">用例2：无错误</button>
+      <button class="preset" data-case="case3" data-text="万豪万家浙江冬日。" data-expect="修正为「万好万家浙江东日」类企业名称">用例3：企业名</button>
+      <button class="secondary" id="clearBtn">清空</button>
+    </div>
+    <div class="expect" id="expectBox" hidden></div>
+    <div class="status" id="status">就绪</div>
+  </div>
+
+  <div class="card">
+    <label>structured_response</label>
+    <pre id="output">{}</pre>
+  </div>
+
+  <script>
+    const textEl = document.getElementById("text");
+    const outputEl = document.getElementById("output");
+    const statusEl = document.getElementById("status");
+    const expectBox = document.getElementById("expectBox");
+    let presetMap = {};
+
+    async function loadPresets() {
+      const res = await fetch("/api/presets");
+      const items = await res.json();
+      presetMap = Object.fromEntries(items.map((x) => [x.id, x]));
+    }
+
+    const presetsReady = loadPresets().catch((err) => {
+      statusEl.textContent = "预设加载失败，使用按钮内置文本：" + err.message;
+    });
+
+    function resolvePreset(btn) {
+      const fromApi = presetMap[btn.dataset.case];
+      if (fromApi) return fromApi;
+      const text = btn.dataset.text || "";
+      if (!text) return null;
+      return {
+        text,
+        expect: btn.dataset.expect || "",
+      };
+    }
+
+    async function runCorrect() {
+      const text = textEl.value.trim();
+      if (!text) {
+        statusEl.textContent = "请先输入文本";
+        return;
+      }
+      statusEl.textContent = "请求中…";
+      outputEl.textContent = "{}";
+      try {
+        const res = await fetch("/api/correct", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || res.statusText);
+        }
+        outputEl.textContent = JSON.stringify(data, null, 2);
+        statusEl.textContent = "完成";
+      } catch (err) {
+        statusEl.textContent = "失败：" + err.message;
+        outputEl.textContent = String(err.message);
+      }
+    }
+
+    document.getElementById("runBtn").addEventListener("click", runCorrect);
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      textEl.value = "";
+      outputEl.textContent = "{}";
+      expectBox.hidden = true;
+      statusEl.textContent = "已清空";
+    });
+
+    document.querySelectorAll(".preset").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await presetsReady;
+        const item = resolvePreset(btn);
+        if (!item) {
+          statusEl.textContent = "未找到用例：" + btn.dataset.case;
+          return;
+        }
+        textEl.value = item.text;
+        expectBox.hidden = false;
+        expectBox.textContent = "期望：" + item.expect;
+        await runCorrect();
+      });
+    });
+  </script>
+</body>
+</html>

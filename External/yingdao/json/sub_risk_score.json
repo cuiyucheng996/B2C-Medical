@@ -1,0 +1,322 @@
+{
+  "name": "sub_risk_score",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -512,
+        -176
+      ],
+      "id": "ef9550a8-4fa7-4191-93b7-92a72c7e62d1",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 查询语句的筛选条件，根据自己表的数量来\nSELECT asin, product_name, brand, category, price\nFROM product_scores\nWHERE risk_score IS NULL;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -32,
+        -32
+      ],
+      "id": "fb61fdbf-c086-4cc5-a6e5-64ba507472e9",
+      "name": "节点 1：MySQL — 查询待评分商品",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "96ba9c8c-6bab-4ac3-920c-8deab20b80f6",
+              "name": "myapi",
+              "value": "sk-ws-H.EEXXXHX.gI5G.MEQCIFXUCwt8r7cRMaTdy_Ffo3HLgOUxHR9qICXkMzXAcWFkAiAalCL1uF9KrJ2GBS3ILKzEl7YNxAanosKBG2aL00wJIw",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -256,
+        -32
+      ],
+      "id": "ebe07b3d-ba6d-46a5-aa57-c7f39893e5cc",
+      "name": "设置API"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        176,
+        -32
+      ],
+      "id": "7725fca7-3043-456c-8233-e66c8c419a02",
+      "name": "节点 2：Loop Over Items — 逐个商品循环"
+    },
+    {
+      "parameters": {
+        "url": "https://ws-ldaumwxk8bun6v2j.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen3.7-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"=你是跨境电商市场风险分析专家。请分析以下商品的市场风险，返回严格 JSON 格式(注意：risk_summary字段中的内容请翻译成中文)：\\n商品：{{ $json.product_name }}\\n品类：{{ $json.category }}\\n售价：${{ $json.price }}\\n\\n请评估以下风险维度并返回 JSON：\\n{\\n  \\\"seasonal_risk\\\": 0-10,\\n  \\\"patent_risk\\\": 0-10,\\n  \\\"return_risk\\\": 0-10,\\n  \\\"policy_risk\\\": 0-10,\\n  \\\"total_risk_score\\\": 0-100,\\n  \\\"risk_summary\\\": \\\"一句话风险总结\\\"\\n}\\n仅返回 JSON，不要任何解释。\"\n    }\n  ],\n  \"temperature\": 0.3,\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        528,
+        80
+      ],
+      "id": "40383be5-7b6e-4475-ae1e-f517c1a8d554",
+      "name": "节点 3：HTTP Request — 调用千问 LLM",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "6dxHYr4edgt8Xv9w",
+          "name": "Bearer千问"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "53b5853e-3765-4fd4-be42-ba30569e585e",
+              "name": "asin",
+              "value": "={{ $('节点 2：Loop Over Items — 逐个商品循环').item.json.asin }}",
+              "type": "string"
+            },
+            {
+              "id": "4acadf90-48d4-420b-aff5-d7566a96e8ef",
+              "name": "risk_score",
+              "value": "={{ JSON.parse($json.choices[0].message.content).total_risk_score }}",
+              "type": "string"
+            },
+            {
+              "id": "f7c79094-4744-4fcd-911b-f364c2c2c765",
+              "name": "risk_summary",
+              "value": "={{ JSON.parse($json.choices[0].message.content).risk_summary }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        736,
+        80
+      ],
+      "id": "389d3f11-e599-4676-b45e-ce303ece5f78",
+      "name": "节点 4：Edit Fields — 解析返回 JSON"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE product_scores\nSET \n  risk_score = {{ $json.risk_score }},\n  risk_summary = '{{ $json.risk_summary }}' \nWHERE asin = '{{ $json.asin }}';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        528,
+        320
+      ],
+      "id": "07cba5b0-3b5d-499d-bc67-d9e8ab2f80dc",
+      "name": "节点 5：MySQL — 写回风险评分",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "/* =========================================================\n   等 LLM 风险分回来以后，再统一计算最终总分\n   注意：这里的 (100-risk_score) 实际存的是“安全分”\n   ========================================================= */\nUPDATE product_scores\nSET total_score = ROUND(\n    rule_score_80 + (100-risk_score) * 0.20,\n    1\n)\n  where asin='{{ $('节点 4：Edit Fields — 解析返回 JSON').first().json.asin }}'\n  ;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        736,
+        320
+      ],
+      "id": "c178c1ff-8b45-4eb4-b4fb-e260a674506a",
+      "name": "5.3.3 写回风险分并计算总分",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn [\n  {\n    json: {\n      success: items.every(item => item.json.success === true),\n      count: items.length,\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        -128
+      ],
+      "id": "476afefe-5f1e-410a-af5a-780b59ebd269",
+      "name": "节点 6：Code — 输出最终结果（End）"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -496,
+        208
+      ],
+      "id": "5368af0b-5674-4548-9a06-bfed017b9350",
+      "name": "When Executed by Another Workflow"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "设置API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 1：MySQL — 查询待评分商品": {
+      "main": [
+        [
+          {
+            "node": "节点 2：Loop Over Items — 逐个商品循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "设置API": {
+      "main": [
+        [
+          {
+            "node": "节点 1：MySQL — 查询待评分商品",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 2：Loop Over Items — 逐个商品循环": {
+      "main": [
+        [
+          {
+            "node": "节点 6：Code — 输出最终结果（End）",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "节点 3：HTTP Request — 调用千问 LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 3：HTTP Request — 调用千问 LLM": {
+      "main": [
+        [
+          {
+            "node": "节点 4：Edit Fields — 解析返回 JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 4：Edit Fields — 解析返回 JSON": {
+      "main": [
+        [
+          {
+            "node": "节点 5：MySQL — 写回风险评分",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 5：MySQL — 写回风险评分": {
+      "main": [
+        [
+          {
+            "node": "5.3.3 写回风险分并计算总分",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5.3.3 写回风险分并计算总分": {
+      "main": [
+        [
+          {
+            "node": "节点 2：Loop Over Items — 逐个商品循环",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "设置API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "cb22c41d-ed05-4f02-b9aa-d21e0d857f9f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "13de77a588de45dd6bf86ec1cf85fd89ff448f07bbfba708e13f9522ad29d1b8"
+  },
+  "id": "bNXhY6wGhpZHFlGlul063",
+  "tags": []
+}

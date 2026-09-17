@@ -1,0 +1,488 @@
+{
+  "name": "Vision多模态商品图片",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        -144
+      ],
+      "id": "aecb18c9-7395-42a5-8ce5-4daa893ced6c",
+      "name": "When clicking ‘Execute workflow’",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT asin, title, image_url\nFROM raw_products\nWHERE vision_analyzed = 0\n  AND crawl_date = CURDATE()   -- ← 加这行，只分析今天新采的商品\n;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        -160,
+        -96
+      ],
+      "id": "bfe35c4b-b788-4249-9ca8-3efe7e96c6b4",
+      "name": "节点 1：MySQL 查询待分析商品",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        48,
+        -96
+      ],
+      "id": "38386c49-6546-4782-a4b1-fac50fa9cda7",
+      "name": "节点 2：Loop Over Items"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "24976754-4ed5-4558-a2ee-c8f3b088a4fb",
+              "name": "prompt",
+              "value": "你是一位跨境电商视觉分析专家，专注于 Amazon 商品图片分析。 请分析这张商品主图，从电商转化率角度评估，返回严格 JSON：   {      \"dominant_colors\": [\"主色1\", \"主色2\"],      \"style_tags\": [\"标签\"],      \"target_audience\": \"目标人群一句话描述\",      \"visual_quality_score\": 【0-10浮点数，保留1位小数】,      \"selling_point_from_image\": \"从图片中能看出的核心卖点\",      \"competitor_similarity\": \"与哪类竞品视觉风格相似\"  }   style_tags 从以下选择： 极简/复古/可爱/科技/奢华/户外/北欧/日系/美式/工业   评分标准：  - 1-3分：图片模糊、背景杂乱、产品不突出  - 4-6分：图片清晰但无特色  - 7-8分：构图专业、风格明确  - 9-10分：视觉冲击力强、能直接促成购买    硬性规则： 1. visual_quality_score 根据图片真实质量独立评估，严禁持续输出相同分值； 2. style_tags 只能使用给定标签，不能自创； 3. 仅返回纯净JSON，不要任何解释、前言、markdown标记。",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        256,
+        112
+      ],
+      "id": "a7315456-07ad-4b20-b1a1-6eceb341d782",
+      "name": "节点 4：Set：构建Vision图片识别提示词"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n    \"model\": \"qwen-vl-max\",\n    \"messages\": [{\n        \"role\": \"user\",\n        \"content\": [\n            {\n                \"type\": \"image_url\",\n                \"image_url\": {\n                    \"url\": \"{{ $('节点 2：Loop Over Items').item.json.image_url }}\"\n                }\n            },\n            {\n                \"type\": \"text\",\n                \"text\": {{ JSON.stringify($json.prompt) }}\n            }\n        ]\n    }],\n    \"temperature\": 0.3,\n    \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        464,
+        112
+      ],
+      "id": "489edb0b-b90b-4bec-9605-015662c9f8a5",
+      "name": "节点 5：HTTP Request——调用通义千问 VL",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "6dxHYr4edgt8Xv9w",
+          "name": "Bearer千问"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "15f6b599-9106-4537-a926-3a7c98ace13f",
+              "name": "vision_data",
+              "value": "={{ $json.choices[0].message.content }}",
+              "type": "string"
+            },
+            {
+              "id": "08b2ffaa-ca2f-4a12-a891-e685107559aa",
+              "name": "vision_colors",
+              "value": "={{ JSON.parse($json.choices[0].message.content).dominant_colors}}",
+              "type": "string"
+            },
+            {
+              "id": "f5faf442-4ff9-4a3d-b82f-f5fb5eaa24ab",
+              "name": "vision_style",
+              "value": "={{ JSON.parse($json.choices[0].message.content).style_tags}}",
+              "type": "string"
+            },
+            {
+              "id": "4d7999d4-312a-46b5-9218-c52ed38548cf",
+              "name": "vision_audience",
+              "value": "={{ JSON.parse($json.choices[0].message.content).target_audience }}",
+              "type": "string"
+            },
+            {
+              "id": "9cd238a2-3dc2-4828-b411-39f40565da23",
+              "name": "vision_score",
+              "value": "={{ JSON.parse($json.choices[0].message.content).visual_quality_score }}",
+              "type": "string"
+            },
+            {
+              "id": "6c47fb6f-c703-4e37-bc8a-df010f595ec4",
+              "name": "vision_selling_pt",
+              "value": "={{ JSON.parse($json.choices[0].message.content).selling_point_from_image }}",
+              "type": "string"
+            },
+            {
+              "id": "764a38be-10ce-42ef-bf17-c4564e82ab96",
+              "name": "competitor_similarity",
+              "value": "={{JSON.parse($json.choices[0].message.content).competitor_similarity }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        640,
+        112
+      ],
+      "id": "6473c7a0-2e1c-4734-82a7-bfd3a5f5ceee",
+      "name": "节点 6：Set：获取图片解析结果"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE raw_products SET\n    vision_data       = '{{ $json.vision_data }}',\n    vision_colors     = '{{$json.vision_colors  }}',\n    vision_style      = '{{$json.vision_style }}',\n    vision_audience   = '{{ $json.vision_audience }}',\n    vision_score      =  {{ $json.vision_score }},\n    vision_selling_pt = '{{$json.vision_selling_pt }}',\n    vision_analyzed   = 1\nWHERE asin = '{{ $('节点 2：Loop Over Items').item.json.asin }}'\n  AND crawl_date = CURDATE();   -- ← 加这一行",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mySql",
+      "typeVersion": 2.5,
+      "position": [
+        848,
+        112
+      ],
+      "id": "89e4eddf-513e-46f6-9e86-cb673b1667e6",
+      "name": "节点 7：MySQL UPDATE 回写分析结果",
+      "credentials": {
+        "mySql": {
+          "id": "oqMufKKjm4zZ58JH",
+          "name": "MySQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5bca3772-a8f4-44f8-af6f-00c0f1a0a4ac",
+              "name": "vision_info",
+              "value": "={{ $itemIndex + 1 + '、' +  $('节点 1：MySQL 查询待分析商品').first().json.asin +'|' +$('节点 1：MySQL 查询待分析商品').first().json.title + '|' + '视觉主色调: '+  $('节点 1：MySQL 查询待分析商品').first().json.vision_colors+ '|'+ '视觉风格: '+  $('节点 1：MySQL 查询待分析商品').first().json.vision_style +'|'+'目标人群: ' +  $('节点 1：MySQL 查询待分析商品').first().json.vision_audience + '|'+'视觉评分: '+  $('节点 1：MySQL 查询待分析商品').first().json.vision_score + '|'+'核心卖点: '+  $('节点 1：MySQL 查询待分析商品').first().json.vision_selling_pt }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        256,
+        -176
+      ],
+      "id": "8de08d69-e901-42e4-ae78-5987fce9ff48",
+      "name": "节点 8：Set：获取每个商品的Vision图片解析信息"
+    },
+    {
+      "parameters": {
+        "fieldsToSummarize": {
+          "values": [
+            {
+              "aggregation": "concatenate",
+              "field": "vision_info",
+              "separateBy": "\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.summarize",
+      "typeVersion": 1.1,
+      "position": [
+        464,
+        -176
+      ],
+      "id": "5ecf80c4-4ca3-49e7-a1a2-02d8c349e56c",
+      "name": "节点 9：Summarize：汇总所有商品的Vision图片解析信息"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8dd969cf-4bbb-4db8-a47d-03b000a3a214",
+              "name": "prompt",
+              "value": "=以下是 三个```中的内容是 7 款智能猫砂盆的视觉特征分析数据：   ``` {{ $json.concatenated_vision_info }} ``` 请从跨境电商视觉营销角度回答：  1.哪些产品的视觉风格高度同质化？（红海警告）  2.存在哪些视觉空白区？（蓝海机会）  3.新品主图应该主打什么风格才能差异化？ 请严格按以下 JSON 格式返回，不要输出任何解释： {   \"red_ocean_products\": [     {       \"asin\": \"B0XXXXXXX\",       \"product_name\": \"产品名\",       \"visual_style\": [\"科技\", \"极简\"],       \"similarity_reason\": \"与哪些竞品视觉高度相似\"     }   ],   \"blue_ocean_opportunities\": [     {       \"opportunity\": \"视觉空白区描述\",       \"why_it_matters\": \"为什么值得切入\",       \"recommended_style\": [\"北欧\", \"日系\"]     }   ],   \"differentiation_strategy\": {     \"main_style\": \"建议主打风格\",     \"main_color_direction\": [\"主色1\", \"主色2\"],     \"main_visual_message\": \"主图应传达的核心感受\"   },   \"summary\": \"一句话结论\",   \"concise_report\": \"请给出回答以上三个问题的视觉竞争力矩阵分析简报，要给老板看的\" }",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        672,
+        -176
+      ],
+      "id": "f51adad6-f840-4be4-a314-e3633fe76d1f",
+      "name": "节点 10：Set：构造Vision LLM分析提示词"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen3.7-max\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.prompt) }}\n    }\n  ],\n  \"temperature\": 0.3,\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        880,
+        -176
+      ],
+      "id": "3037c941-e291-416c-85f0-a121e700bd51",
+      "name": "节点 11：HTTP Request — 调用千问 LLM",
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "6dxHYr4edgt8Xv9w",
+          "name": "Bearer千问"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2bffb79b-5b64-44f5-bf8d-b75c7604a138",
+              "name": "红海警告",
+              "value": "={{ JSON.parse($json.choices[0].message.content).red_ocean_products }}",
+              "type": "string"
+            },
+            {
+              "id": "7c9083fb-84c4-4127-99f8-914825b2b7de",
+              "name": "蓝海机会",
+              "value": "={{ JSON.parse($json.choices[0].message.content).blue_ocean_opportunities }}",
+              "type": "string"
+            },
+            {
+              "id": "a7acdbe8-fc50-433b-9e71-7739cab0257a",
+              "name": "新品主图风格建议",
+              "value": "={{ JSON.stringify(JSON.parse($json.choices[0].message.content).differentiation_strategy, null, 2) }}",
+              "type": "string"
+            },
+            {
+              "id": "33cecdd1-88d9-4a6c-819a-f35370d50f83",
+              "name": "一句话建议",
+              "value": "={{ JSON.parse($json.choices[0].message.content).summary }}",
+              "type": "string"
+            },
+            {
+              "id": "e756f3c1-cbd2-4311-9797-5947168d83eb",
+              "name": "视觉竞争力矩阵分析简报",
+              "value": "={{ JSON.parse($json.choices[0].message.content).concise_report }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1088,
+        -176
+      ],
+      "id": "205f212e-34dc-4bf4-bbb4-9013496e1b04",
+      "name": "节点 12：Edit Fields — 解析返回 JSON"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -432,
+        144
+      ],
+      "id": "84f5c3d4-3b9e-4e44-b697-48e7ac7cbcef",
+      "name": "When Executed by Another Workflow"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "节点 1：MySQL 查询待分析商品",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 1：MySQL 查询待分析商品": {
+      "main": [
+        [
+          {
+            "node": "节点 2：Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 2：Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "节点 8：Set：获取每个商品的Vision图片解析信息",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "节点 4：Set：构建Vision图片识别提示词",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 4：Set：构建Vision图片识别提示词": {
+      "main": [
+        [
+          {
+            "node": "节点 5：HTTP Request——调用通义千问 VL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 5：HTTP Request——调用通义千问 VL": {
+      "main": [
+        [
+          {
+            "node": "节点 6：Set：获取图片解析结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 6：Set：获取图片解析结果": {
+      "main": [
+        [
+          {
+            "node": "节点 7：MySQL UPDATE 回写分析结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 7：MySQL UPDATE 回写分析结果": {
+      "main": [
+        [
+          {
+            "node": "节点 2：Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 8：Set：获取每个商品的Vision图片解析信息": {
+      "main": [
+        [
+          {
+            "node": "节点 9：Summarize：汇总所有商品的Vision图片解析信息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 9：Summarize：汇总所有商品的Vision图片解析信息": {
+      "main": [
+        [
+          {
+            "node": "节点 10：Set：构造Vision LLM分析提示词",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 10：Set：构造Vision LLM分析提示词": {
+      "main": [
+        [
+          {
+            "node": "节点 11：HTTP Request — 调用千问 LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "节点 11：HTTP Request — 调用千问 LLM": {
+      "main": [
+        [
+          {
+            "node": "节点 12：Edit Fields — 解析返回 JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "节点 1：MySQL 查询待分析商品",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "c6dbc094-8486-4478-93b3-51e27070fc60",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "13de77a588de45dd6bf86ec1cf85fd89ff448f07bbfba708e13f9522ad29d1b8"
+  },
+  "id": "SC9zc3cDgxbNCfxr2ILO1",
+  "tags": []
+}

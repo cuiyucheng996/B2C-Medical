@@ -1,0 +1,13 @@
+# B2C business Python 依赖（训练 / 纠错 schema / LangChain）
+torch
+transformers
+datasets
+tensorboard
+tqdm
+pydantic>=2.0
+rouge_score
+langchain
+langchain-openai
+python-dotenv
+fastapi
+uvicorn[standard]

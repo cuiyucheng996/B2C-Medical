@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>B2C 陪聊调试台</title>
+  <style>
+    :root {
+      --bg: #eef3ef;
+      --ink: #1c241e;
+      --muted: #5c6b62;
+      --card: #ffffff;
+      --line: #d5e0d8;
+      --accent: #2f6f4e;
+      --accent-soft: #e4f2ea;
+      --user: #d8eee2;
+      --ai: #f3f1eb;
+      --code: #152019;
+      --code-fg: #d7e8dc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(1200px 500px at 10% -10%, #dceadf, var(--bg));
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 40px; }
+    .hero { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 26px; letter-spacing: .02em; }
+    .sub { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+    .meta { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 12px; color: var(--muted); }
+    .chip strong { color: var(--ink); font-weight: 600; }
+    .grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(28, 36, 30, .05); }
+    .toolbar { display: flex; gap: 8px; }
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfdfb;
+      font-size: 14px;
+    }
+    input:focus { outline: 2px solid #b7d7c4; border-color: var(--accent); }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      background: #e8eee9;
+      color: var(--ink);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    button.primary { background: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .messages {
+      min-height: 360px;
+      max-height: 52vh;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px 2px 4px;
+    }
+    .msg { max-width: 82%; padding: 10px 12px; border-radius: 14px; white-space: pre-wrap; line-height: 1.5; font-size: 14px; }
+    .msg.user { align-self: flex-end; background: var(--user); }
+    .msg.ai { align-self: flex-start; background: var(--ai); }
+    .msg-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .msg-actions button { padding: 6px 10px; font-size: 12px; background: var(--accent-soft); color: var(--accent); }
+    .msg.sys { align-self: center; background: var(--accent-soft); color: var(--muted); font-size: 12px; }
+    .composer { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+    .speak-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+    button.mic-on { background: #b42318; color: #fff; }
+    .debug-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+    .debug-head h2 { margin: 0; font-size: 16px; }
+    .debug-grid { display: grid; gap: 12px; }
+    .block h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--code);
+      color: var(--code-fg);
+      padding: 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .hint { color: var(--muted); font-size: 12px; }
+    @media (max-width: 900px) {
+      .grid, .hero { grid-template-columns: 1fr; display: block; }
+      .hero { margin-bottom: 14px; }
+      .meta { margin-top: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hero">
+      <div>
+        <h1>B2C 长期陪聊</h1>
+        <p class="sub">聊天只用短期 session。Finding 抽离在结束会话或关页时才入库。</p>
+        <p class="sub"><a href="/" style="color:#2f6f4e;">切换账号</a> · <a href="/tools" style="color:#2f6f4e;">工具注册表</a> · <a href="/eval" style="color:#2f6f4e;">评测台</a></p>
+      </div>
+      <div class="meta">
+        <span class="chip">session <strong id="chipSession">未创建</strong></span>
+        <span class="chip">group/user <strong id="chipUser">-</strong></span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="toolbar">
+          <input id="userId" required autocomplete="off" placeholder="必填：Neo4j UserInfo.id" />
+          <button id="btnNew" class="primary">新建会话</button>
+          <button id="btnEnd">结束并入库</button>
+        </div>
+        <div id="messages" class="messages">
+          <div class="msg sys">填写 user_id 后新建会话，再开始说话。</div>
+        </div>
+        <div class="composer">
+          <input id="text" placeholder="说说近况、症状、心情…" />
+          <input id="reportFile" type="file" accept=".png,.jpg,.jpeg,.jfif,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif,.ico,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.ppt,.pptx" style="display:none" />
+          <button id="btnReport" type="button">上传报告</button>
+          <button id="btnMic" type="button">按住说话</button>
+          <label class="speak-toggle"><input id="chkThink" type="checkbox" /> 思考模式</label>
+          <label class="speak-toggle"><input id="chkSpeak" type="checkbox" checked /> 播报</label>
+          <button id="btnSend" class="primary">发送</button>
+        </div>
+      </section>
+
+      <aside class="card">
+        <div class="debug-head">
+          <h2>本轮调试</h2>
+          <span class="hint" id="debugHint">还没有回合</span>
+        </div>
+        <div class="debug-grid">
+          <div class="block">
+            <h3>进入 Agent 前预处理（纠错→意图→否定→抽实体→对齐→Cypher）</h3>
+            <pre id="dumpPrep">-</pre>
+          </div>
+          <div class="block">
+            <h3>Agent 结构化返回</h3>
+            <pre id="dumpRound">-</pre>
+          </div>
+          <div class="block">
+            <h3>记忆检索 facts</h3>
+            <pre id="dumpFacts">-</pre>
+          </div>
+          <div class="block">
+            <h3>实体抽离入库 ingest</h3>
+            <pre id="dumpIngest">-</pre>
+          </div>
+          <div class="block">
+            <h3>session 全量</h3>
+            <pre id="dumpSession">-</pre>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    let sessionId = "";
+    let resumeToken = "";
+    let closing = false;
+    const $ = (id) => document.getElementById(id);
+
+    function pretty(value) {
+      if (value == null || value === "") return "-";
+      return JSON.stringify(value, null, 2);
+    }
+    function formatReportSummary(report) {
+      if (!report || !report.filename) return "";
+      const inds = report.indicators || [];
+      const lines = ["【报告摘要】" + report.filename + " · " + (inds.length || 0) + " 项指标"];
+      inds.slice(0, 8).forEach((item) => {
+        const name = item.name || "";
+        const value = [item.value, item.unit, item.flag].filter(Boolean).join(" ");
+        if (name) lines.push("- " + name + " " + value);
+      });
+      return lines.join("\n");
+    }
+
+    function addMsg(role, text, actions) {
+      const el = document.createElement("div");
+      el.className = "msg " + role;
+      const body = document.createElement("div");
+      body.className = "msg-text";
+      body.textContent = text;
+      el.appendChild(body);
+      $("messages").appendChild(el);
+      attachActions(el, actions);
+      $("messages").scrollTop = $("messages").scrollHeight;
+      return el;
+    }
+
+    function attachActions(el, actions) {
+      if (!el) return;
+      const old = el.querySelector(".msg-actions");
+      if (old) old.remove();
+      if (!actions || !actions.length) return;
+      const bar = document.createElement("div");
+      bar.className = "msg-actions";
+      for (const item of actions) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = item.label || item.id;
+        btn.onclick = () => runAction(item.id);
+        bar.appendChild(btn);
+      }
+      el.appendChild(bar);
+    }
+
+    function runAction(id) {
+      if (id === "upload_report") {
+        if (!sessionId) { alert("请先新建会话"); return; }
+        $("reportFile").click();
+        return;
+      }
+      if (id === "book_expert") send("帮我预约专家问诊");
+    }
+
+    function showSessionMeta(data) {
+      sessionId = data.session_id || sessionId;
+      $("chipSession").textContent = sessionId || "未创建";
+      $("chipUser").textContent = data.group_id || data.user_id || "-";
+      $("dumpSession").textContent = pretty(data);
+    }
+
+    function userKey() {
+      return ($("userId").value || "").trim() || sessionId;
+    }
+
+    function persistUrl() {
+      const id = userKey();
+      if (!id) return "";
+      return "/api/sessions/" + encodeURIComponent(id) + "/close";
+    }
+
+    async function persistSession({ silent } = { silent: false }) {
+      const url = persistUrl();
+      if (!url || closing) return null;
+      closing = true;
+      try {
+        const res = await fetch(url, { method: "POST", keepalive: true });
+        const data = await res.json().catch(() => ({}));
+        if (data.ingest && data.ingest.skipped) {
+          if (!silent) $("debugHint").textContent = "会话已不在服务端（可能刚重启）";
+          return data;
+        }
+        if (!silent) {
+          $("dumpIngest").textContent = pretty(data.ingest || data);
+          $("debugHint").textContent = "会话结束入库";
+          if (data.session) showSessionMeta(data.session);
+          addMsg("sys", "本场已抽离入库。");
+        }
+        return data;
+      } catch (err) {
+        if (!silent) alert("入库失败");
+        return null;
+      } finally {
+        closing = false;
+      }
+    }
+
+    function persistOnLeave() {
+      const url = persistUrl();
+      if (!url) return;
+      const blob = new Blob([], { type: "application/json" });
+      if (navigator.sendBeacon) navigator.sendBeacon(url, blob);
+      else fetch(url, { method: "POST", keepalive: true });
+    }
+
+    function showRound(data) {
+      const round = data.round || {
+        session_id: data.session && data.session.session_id,
+        group_id: data.session && data.session.group_id,
+        reply: data.reply,
+        memory_facts: data.facts,
+        ingest: data.ingest,
+        session: data.session,
+      };
+      $("debugHint").textContent = "最近一次 /chat";
+      $("dumpRound").textContent = pretty(round);
+      $("dumpPrep").textContent = pretty(data.preprocess || round.preprocess);
+      $("dumpFacts").textContent = pretty(data.facts);
+      $("dumpIngest").textContent = pretty(data.ingest);
+      if (data.session) showSessionMeta(data.session);
+      const hitl = data.hitl || round.hitl;
+      if (hitl && hitl.resume_token) resumeToken = hitl.resume_token;
+      else if (!hitl || !hitl.pending) resumeToken = "";
+    }
+
+    $("btnEnd").onclick = async () => {
+      if (!sessionId) { alert("没有进行中的会话"); return; }
+      await persistSession({ silent: false });
+    };
+
+      $("btnNew").onclick = async () => {
+      const user_id = $("userId").value.trim();
+      if (!user_id) {
+        alert("请先填写 user_id（Neo4j UserInfo.id）。");
+        $("userId").focus();
+        return;
+      }
+      await persistSession({ silent: true });
+      const res = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || "新建失败"); return; }
+      const canon = String(data.group_id || data.user_id || user_id || "").trim();
+      if (canon) {
+        $("userId").value = canon;
+        try { localStorage.setItem("b2c-user-id", canon); } catch (e) {}
+      }
+      $("messages").innerHTML = "";
+      addMsg("sys", "会话已建立。下面是进场根据长期记忆的推送。");
+      const push = data.push || {};
+      addMsg("ai", push.text || "（无推送）");
+      showSessionMeta(data);
+      $("dumpRound").textContent = pretty({ event: "create_session", session_id: data.session_id, group_id: data.group_id, push: push });
+      $("dumpFacts").textContent = pretty(push.facts || []);
+      $("dumpIngest").textContent = pretty({ deferred: true, reason: "persist_on_session_end" });
+      $("debugHint").textContent = "进场推送（长期记忆）";
+      resumeToken = "";
+    };
+
+    window.addEventListener("pagehide", persistOnLeave);
+
+    async function send(preset, opts) {
+      const speak = Boolean(opts && opts.speak);
+      const channel = (opts && opts.channel) || "text";
+      const presetText = typeof preset === "string" ? preset : "";
+      const text = String(presetText || $("text").value || "").trim();
+      if (!sessionId) { alert("请先新建会话"); return ""; }
+      if (!text) return "";
+      if (!presetText) $("text").value = "";
+      addMsg("user", text);
+      $("btnSend").disabled = true;
+      $("debugHint").textContent = "SSE 流式回复中";
+
+      const res = await fetch("/api/sessions/" + encodeURIComponent(userKey()) + "/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ text, resume_token: resumeToken || "", input_channel: channel, think: !!(document.getElementById("chkThink") && document.getElementById("chkThink").checked) }),
+      });
+      if (!res.ok) {
+        $("btnSend").disabled = false;
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        addMsg("sys", "错误: " + (err.detail || "请求失败"));
+        return "";
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let assistantEl = null;
+      let spoken = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+          for (const block of parts) {
+            const line = block.trim();
+            if (!line.startsWith("data: ")) continue;
+            let data;
+            try {
+              data = JSON.parse(line.slice(6));
+            } catch {
+              continue;
+            }
+            if (data.event === "thinking") {
+              $("debugHint").textContent = data.message || "正在回复…";
+            } else if (data.event === "suspended") {
+              resumeToken = data.resume_token || resumeToken;
+              $("debugHint").textContent = "等待补充：" + (data.question || "");
+              attachActions(assistantEl, data.actions);
+            } else if (data.event === "token") {
+              if (!assistantEl) {
+                assistantEl = addMsg("ai", "");
+              }
+              const body = assistantEl.querySelector(".msg-text") || assistantEl;
+              body.textContent += data.content || "";
+              spoken = body.textContent;
+              $("messages").scrollTop = $("messages").scrollHeight;
+            } else if (data.event === "state") {
+              showRound(data.data || {});
+              attachActions(assistantEl, (data.data || {}).actions);
+              $("debugHint").textContent = "SSE 结束";
+            } else if (data.event === "error") {
+              addMsg("sys", "错误: " + (data.message || "流式失败"));
+            }
+          }
+        }
+      } finally {
+        $("btnSend").disabled = false;
+      }
+      if (speak && spoken && $("chkSpeak") && $("chkSpeak").checked) {
+        await playTts(spoken);
+      }
+      return spoken;
+    }
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    async function playTts(text) {
+      try {
+        const res = await fetch("/api/voice/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text.slice(0, 800) }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          addMsg("sys", "播报失败: " + (err.detail || res.statusText));
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        await audio.play();
+      } catch {
+        addMsg("sys", "播报失败");
+      }
+    }
+
+    async function startTalk() {
+      if (!sessionId) { alert("请先新建会话"); return; }
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        addMsg("sys", "当前浏览器不支持录音");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size) audioChunks.push(ev.data);
+      };
+      mediaRecorder.start();
+      $("btnMic").classList.add("mic-on");
+      $("btnMic").textContent = "松开识别";
+    }
+
+    async function stopTalk() {
+      const rec = mediaRecorder;
+      mediaRecorder = null;
+      $("btnMic").classList.remove("mic-on");
+      $("btnMic").textContent = "按住说话";
+      if (!rec || rec.state === "inactive") return;
+      const blob = await new Promise((resolve) => {
+        rec.onstop = () => resolve(new Blob(audioChunks, { type: rec.mimeType || "audio/webm" }));
+        rec.stop();
+        rec.stream.getTracks().forEach((track) => track.stop());
+      });
+      if (!blob.size) return;
+      $("debugHint").textContent = "正在识别…";
+      const body = new FormData();
+      body.append("file", blob, "speech.webm");
+      const res = await fetch("/api/voice/asr", { method: "POST", body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        addMsg("sys", "识别失败: " + (data.detail || res.statusText));
+        return;
+      }
+      const text = String(data.text || "").trim();
+      if (!text) {
+        addMsg("sys", "没有听清，请再说一次");
+        return;
+      }
+      await send(text, { speak: true, channel: "asr" });
+    }
+
+    $("btnSend").onclick = () => send();
+    $("text").addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        send();
+      }
+    });
+    $("btnMic").addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      startTalk().catch((err) => addMsg("sys", "无法开麦: " + (err && err.message ? err.message : "失败")));
+    });
+    $("btnMic").addEventListener("pointerup", () => {
+      stopTalk().catch(() => addMsg("sys", "识别失败"));
+    });
+    $("btnMic").addEventListener("pointerleave", () => {
+      if (mediaRecorder) stopTalk().catch(() => {});
+    });
+
+    $("btnReport").onclick = () => {
+      if (!sessionId) { alert("请先新建会话"); return; }
+      $("reportFile").click();
+    };
+    $("reportFile").addEventListener("change", async () => {
+      const file = $("reportFile").files && $("reportFile").files[0];
+      $("reportFile").value = "";
+      if (!file) return;
+      await uploadReport(file);
+    });
+    $("text").addEventListener("paste", async (ev) => {
+      const items = ev.clipboardData && ev.clipboardData.items;
+      if (!items) return;
+      const imageItem = [...items].find((item) => item.type && item.type.startsWith("image/"));
+      if (!imageItem) return;
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      ev.preventDefault();
+      await uploadReport(file);
+    });
+    async function uploadReport(file) {
+      if (!sessionId) { alert("请先新建会话"); return; }
+      addMsg("user", "【上传检查报告】" + file.name);
+      addMsg("sys", "正在解析检查报告（PDF 或图片）…");
+      $("btnReport").disabled = true;
+      $("btnSend").disabled = true;
+      $("debugHint").textContent = "解析报告中";
+      try {
+        const body = new FormData();
+        body.append("file", file, file.name || "report.png");
+        body.append("think", document.getElementById("chkThink") && document.getElementById("chkThink").checked ? "true" : "false");
+        const res = await fetch("/api/sessions/" + encodeURIComponent(userKey()) + "/report", {
+          method: "POST",
+          body,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          addMsg("sys", "解析失败: " + (data.detail || res.statusText));
+          return;
+        }
+        addMsg("ai", [data.reply || "（无解读）", formatReportSummary(data.report)].filter(Boolean).join("\n\n"), data.actions);
+        showRound(data);
+        $("dumpPrep").textContent = pretty({ report: data.report, preprocess: data.preprocess });
+        $("debugHint").textContent = "报告解读 " + ((data.report && data.report.parse_source) || "");
+      } catch (err) {
+        addMsg("sys", "上传失败");
+      } finally {
+        $("btnReport").disabled = false;
+        $("btnSend").disabled = false;
+      }
+    }
+
+    (function bootFromQuery() {
+      const params = new URLSearchParams(location.search);
+      let uid = (params.get("user_id") || "").trim();
+      if (!uid) {
+        try { uid = (localStorage.getItem("b2c-user-id") || "").trim(); } catch (e) { uid = ""; }
+      }
+      if (!uid) return;
+      $("userId").value = uid;
+      $("btnNew").click();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>C 端评测台</title>
+  <style>
+    :root {
+      --bg: #eef3ef;
+      --ink: #1c241e;
+      --muted: #5c6b62;
+      --card: #ffffff;
+      --line: #d5e0d8;
+      --accent: #2f6f4e;
+      --ok: #1f6b45;
+      --bad: #9b2c2c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(1200px 500px at 10% -10%, #dceadf, var(--bg));
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .shell { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0; font-size: 26px; }
+    .sub, .nav, .hint { color: var(--muted); font-size: 14px; }
+    .nav a { color: var(--accent); }
+    .tabs { display: flex; gap: 8px; margin: 16px 0; }
+    .tabs button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .pick { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    select, input[type="text"], input[type="number"], button.act {
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+    select, input[type="text"], input[type="number"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fbfdfb;
+    }
+    button.act {
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.ghost { background: #e8eee9; color: var(--ink); border: 0; border-radius: 10px; padding: 10px 12px; cursor: pointer; font-weight: 600; }
+    .meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+    .meta div { background: #f7faf7; border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+    .meta b { display: block; color: var(--muted); font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); background: #f7faf7; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .pill.ok { background: #e4f2ea; color: var(--ok); }
+    .pill.bad { background: #fde8e8; color: var(--bad); }
+    .up { color: var(--ok); }
+    .down { color: var(--bad); }
+    .hidden { display: none; }
+    .file-table-host { max-height: 520px; overflow: auto; }
+    .file-table-item {
+      margin-bottom: 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .file-table-cap {
+      padding: 8px 12px;
+      background: #f7faf7;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .file-table-render { padding: 10px 12px; overflow-x: auto; }
+    .file-table-render table {
+      border-collapse: collapse;
+      font-size: 12px;
+      width: auto;
+      max-width: 100%;
+    }
+    .file-table-render th,
+    .file-table-render td {
+      border: 1px solid #c8d5cc;
+      padding: 6px 8px;
+      vertical-align: top;
+    }
+    .file-table-render th { background: #eef5f0; }
+    .file-table-text { padding: 0 12px 10px; font-size: 12px; }
+    .file-table-fallback {
+      margin: 0;
+      padding: 10px 12px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      background: #f7faf7;
+    }
+    @media (max-width: 800px) {
+      .pick, .meta { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <h1>C 端评测台</h1>
+    <p class="sub">公共知识库：大类已定为「公共知识问答」。只看细意图、召回、重排。</p>
+    <p class="nav"><a href="/">登录</a> · <a href="/chat">陪聊</a> · <a href="/tools">工具注册表</a></p>
+    <div class="tabs">
+      <button type="button" class="on" data-tab="kb">公共知识库</button>
+      <button type="button" data-tab="ragflow">手册入库</button>
+      <button type="button" data-tab="file">上传文件</button>
+      <button type="button" data-tab="coref">指代补全</button>
+      <button type="button" data-tab="other">其它（路由 / 环境）</button>
+    </div>
+
+    <section id="tab-kb">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">选一句，看细意图和召回</h2>
+        <p class="hint" id="kbHint">大类固定「公共知识问答」。细意图 DeepSeek 限 5 秒，超时改规则；图谱走 Neo4j，检查类走 RAGFlow。</p>
+        <div class="pick" style="margin-top:10px">
+          <select id="kbPick"></select>
+          <button class="act" id="btnKb" type="button">召回并重排</button>
+        </div>
+        <input id="kbText" type="text" style="margin-top:8px" placeholder="可改问题" />
+        <div class="meta">
+          <div><b>细意图 / handler</b><span id="kbIntent">-</span></div>
+          <div><b>本轮工具</b><span id="kbTools">-</span></div>
+          <div><b>通道</b><span id="kbChan">-</span></div>
+        </div>
+        <div class="meta">
+          <div><b>抽出实体</b><span id="kbExtract">-</span></div>
+          <div><b>对齐成</b><span id="kbAlign">-</span></div>
+          <div><b>Milvus</b><span id="kbMilvus">-</span></div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>召回序</th>
+              <th>重排序</th>
+              <th>位移</th>
+              <th>召回分</th>
+              <th>词命中</th>
+              <th>内容</th>
+            </tr>
+          </thead>
+          <tbody id="kbBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">自定义直测：抽实体 → 调工具</h2>
+        <p class="hint" id="kbProbeHint">不走细意图 LLM。先 UIE+对齐抽实体，再按你勾选的工具直接 invoke（与陪聊同一套工具实现）。</p>
+        <input id="kbProbeText" type="text" style="margin-top:8px" placeholder="自定义问题，可与上方共用" />
+        <div id="kbProbeTools" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:13px"></div>
+        <label class="hint" style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <input type="checkbox" id="kbProbeRagEnhance" style="width:auto" checked />
+          RAG 增强（多查询 + RRF + 重排 + 缓存；关则为基线单路召回）
+        </label>
+        <div class="pick" style="margin-top:10px;grid-template-columns:1fr auto">
+          <select id="kbProbeHandler" title="图谱/手册 Cypher 分支；留空则各工具用默认 handler">
+            <option value="">handler 默认（按工具）</option>
+          </select>
+          <button class="act" id="btnKbProbe" type="button">抽实体并调工具</button>
+        </div>
+        <div class="meta">
+          <div><b>抽出实体</b><span id="kbProbeMentions">-</span></div>
+          <div><b>对齐成</b><span id="kbProbeAlign">-</span></div>
+          <div><b>已调工具</b><span id="kbProbeCalled">-</span></div>
+        </div>
+        <p class="hint" id="kbProbeTiming" style="margin:4px 0 10px">用时：-</p>
+        <pre id="kbProbeOut" style="margin:0;padding:12px;background:#f7faf7;border-radius:10px;font-size:12px;max-height:360px;overflow:auto;white-space:pre-wrap">-</pre>
+      </div>
+    </section>
+
+    <section id="tab-ragflow" class="hidden">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">手册入库：上传 → 本地分块 → RAGFlow</h2>
+        <p class="hint" id="rfHint">默认走业务链：DeepDoc 按标题切块后写入 RAGFlow。文件会保存为 eval__ 前缀，避免覆盖正式手册名。</p>
+        <div class="pick" style="margin-top:10px">
+          <input id="rfPick" type="file" accept="application/pdf,.pdf" />
+          <button class="act" id="btnRf" type="button">跑入库评测</button>
+        </div>
+        <p class="hint" style="margin-top:8px">切块方式：本地标题块（默认）或让 RAGFlow naive。</p>
+        <select id="rfSource" style="max-width:360px;margin-top:6px">
+          <option value="local" selected>local · DeepDoc 标题分块后上传</option>
+          <option value="ragflow">ragflow · 上传后由 RAGFlow naive 解析</option>
+        </select>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:13px">
+          <input id="rfSkip" type="checkbox" checked style="width:auto" />
+          只跑本地分块（快；不写 RAGFlow 库，看分块前处理用这个）
+        </label>
+        <div class="meta" style="margin-top:12px">
+          <div><b>总结果</b><span id="rfOk">-</span></div>
+          <div><b>切块方式</b><span id="rfMethod">-</span></div>
+          <div><b>Web</b><span id="rfWeb">-</span></div>
+        </div>
+        <h3 style="margin:16px 0 8px;font-size:14px;">分块参数（可改，入库前生效）</h3>
+        <p class="hint" id="rfCfgHint">进程内覆盖 yaml 默认；重启服务会回到 config.yaml。</p>
+        <div class="meta">
+          <div><b>业务 Embedding 提供方</b><input id="cfgEmbProv" type="text" /></div>
+          <div><b>业务 Embedding 模型</b><input id="cfgEmbModel" type="text" /></div>
+          <div><b>RAGFlow Embedding</b><input id="cfgRfEmb" type="text" /></div>
+        </div>
+        <div class="meta">
+          <div><b>RAGFlow 最大块 token</b><input id="cfgToken" type="number" min="32" max="8000" /></div>
+          <div><b>本地最大块字符</b><input id="cfgLocalMax" type="number" min="32" max="8000" /></div>
+          <div><b>naive 块字符 / 重叠</b>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+              <input id="cfgNaive" type="number" min="32" max="8000" title="naive 块字符" />
+              <input id="cfgOverlap" type="number" min="1" max="2000" title="重叠字符" />
+            </div>
+          </div>
+        </div>
+        <div class="meta">
+          <div><b>切块方法</b><input id="cfgMethod" type="text" /></div>
+          <div><b>分隔符</b><input id="cfgDelim" type="text" /></div>
+          <div><b>版面识别</b><input id="cfgLayout" type="text" /></div>
+        </div>
+        <button class="ghost" id="btnRfCfg" type="button" style="margin-top:4px">保存分块参数</button>
+        <table>
+          <thead><tr><th>结果</th><th>步骤</th><th>说明与主要操作</th></tr></thead>
+          <tbody id="rfSteps"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">分块前这两步怎么跑的</h2>
+        <div id="rfPhases"></div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">每页：字符 / 版面后端</h2>
+        <table>
+          <thead><tr><th>页</th><th>总字符</th><th>电子字</th><th>OCR 补字</th><th>后端</th><th>区域</th><th>行</th></tr></thead>
+          <tbody id="rfPages"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">分块前 content_blocks 样例</h2>
+        <table>
+          <thead><tr><th>类型</th><th>页</th><th>文本</th></tr></thead>
+          <tbody id="rfBlocks"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">本地块预览</h2>
+        <table>
+          <thead><tr><th>序</th><th>页</th><th>内容</th></tr></thead>
+          <tbody id="rfPrev"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-file" class="hidden">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">上传文件（复刻业务闸门）</h2>
+        <p class="hint">打分 → 大类/细意图 → 预处理产物（PDF 或带 meta 的结构化块）→ 报告解读则展示拆表结果。</p>
+        <div class="pick" style="margin-top:10px">
+          <input id="filePick" type="file" />
+          <button class="act" id="btnFile" type="button">跑上传评测</button>
+        </div>
+        <p class="hint" style="margin-top:8px">表格识别方式（报告链路评测）：</p>
+        <select id="fileTableMode" style="max-width:420px;margin-top:6px">
+          <option value="gate" selected>原方式 · 闸门 + MinerU / 闸门切块（explain_uploaded_report）</option>
+          <option value="unstructured">新方式 · UnstructuredPDFLoader（YOLOX + OCR + infer_table_structure）</option>
+        </select>
+        <div id="fileGateOpts" style="margin-top:10px">
+          <p class="hint" style="margin:0 0 6px">原方式可调（闸门 ingest + 子进程 worker）：</p>
+          <div class="meta">
+            <div><b>报告打分阈值</b>
+              <input id="gateLabThreshold" type="number" min="1" max="8" value="2" style="max-width:72px" title="score ≥ 阈值 → lab_report" />
+            </div>
+            <div><b>layout_only</b>
+              <label style="font-size:13px"><input id="gateLayoutOnly" type="checkbox" checked style="width:auto" /> 只标版面区域（不 infer 表 HTML）</label>
+            </div>
+            <div><b>run_explain</b>
+              <label style="font-size:13px"><input id="gateRunExplain" type="checkbox" checked style="width:auto" /> lab_report 时跑 MinerU explain_uploaded_report</label>
+            </div>
+            <div><b>strategy</b><span class="hint"> hi_res（worker 固定）</span></div>
+            <div><b>languages</b><span class="hint"> eng, chi_sim（worker 固定）</span></div>
+          </div>
+        </div>
+        <div id="fileUsOpts" style="margin-top:10px;display:none">
+          <p class="hint" style="margin:0 0 6px">Unstructured 可调（透传 partition / Loader）：</p>
+          <div class="meta">
+            <div><b>strategy</b>
+              <select id="usStrategy" style="max-width:200px">
+                <option value="hi_res" selected>hi_res · 版面+YOLOX（默认）</option>
+                <option value="fast">fast · 快，少版面</option>
+                <option value="ocr_only">ocr_only · 先 OCR</option>
+                <option value="auto">auto</option>
+              </select>
+            </div>
+            <div><b>infer_table_structure</b>
+              <label style="font-size:13px"><input id="usInferTable" type="checkbox" checked style="width:auto" /> 拆表 HTML 行列</label>
+            </div>
+            <div><b>languages</b><input id="usLangs" type="text" value="eng,chi_sim" title="逗号分隔 Tesseract 语言包" /></div>
+          </div>
+        </div>
+        <p class="hint" id="fileHint" style="margin-top:10px">选 PDF / 图片 / 表格文件。</p>
+        <div class="meta">
+          <div><b>得分 / 是否报告</b><span id="fileScore">-</span></div>
+          <div><b>判定意图</b><span id="fileIntent">-</span></div>
+          <div><b>预处理产物</b><span id="fileArt">-</span></div>
+        </div>
+        <table>
+          <thead><tr><th>得分点</th><th>命中</th><th>加分</th><th>说明</th></tr></thead>
+          <tbody id="fileScoreBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">分块前这两步怎么跑的</h2>
+        <div id="filePhases"></div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">每页：字符 / 版面后端</h2>
+        <table>
+          <thead><tr><th>页</th><th>总字符</th><th>电子字</th><th>OCR 补字</th><th>后端</th><th>区域</th><th>行</th></tr></thead>
+          <tbody id="filePages"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">分块前 content_blocks 样例</h2>
+        <table>
+          <thead><tr><th>类型</th><th>页</th><th>文本</th></tr></thead>
+          <tbody id="fileBlocks"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">表格识别（Unstructured hi_res）</h2>
+        <p class="hint" id="fileTableHint">extract_report_tables：YOLOX 找表 + OCR + infer_table_structure。</p>
+        <div id="fileTables" class="file-table-host hint">选文件并跑评测后在此预览表格 HTML。</div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">预处理 JSON</h2>
+        <pre id="filePre" style="white-space:pre-wrap;font-size:12px;max-height:280px;overflow:auto;background:#f7faf7;padding:10px;border-radius:10px;">-</pre>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">报告解读拆表</h2>
+        <p class="hint" id="fileSplitHint">仅 lab_report 会跑 explain_uploaded_report。</p>
+        <pre id="fileSplit" style="white-space:pre-wrap;font-size:12px;max-height:320px;overflow:auto;background:#f7faf7;padding:10px;border-radius:10px;">-</pre>
+      </div>
+    </section>
+
+    <section id="tab-coref" class="hidden">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">金标：判定 + 补全</h2>
+        <p class="hint">有五格槽位（病/症/部位/检查/指标）用规则补；判定有指代但槽里没有对象（如「五事」）再调模型。</p>
+        <button class="act" id="btnCorefGold" type="button">跑指代金标</button>
+        <p id="corefSum" class="hint" style="margin-top:10px">-</p>
+        <table>
+          <thead>
+            <tr>
+              <th>结果</th>
+              <th>用例</th>
+              <th>上一句 / 槽位</th>
+              <th>当前句</th>
+              <th>补全结果</th>
+              <th>来源</th>
+            </tr>
+          </thead>
+          <tbody id="corefBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">试一句</h2>
+        <p class="hint">上一句、当前句、可选槽位（指标/检查/疾病）。</p>
+        <input id="corefPrior" type="text" style="margin-top:8px" placeholder="上一句，如：ALT 偏高是什么意思" />
+        <input id="corefQuery" type="text" style="margin-top:8px" placeholder="当前句，如：那危险吗" />
+        <div class="pick" style="margin-top:8px">
+          <input id="corefSlot" type="text" placeholder="槽位，如 指标=ALT 或 疾病=胃炎" />
+          <button class="act" id="btnCorefOne" type="button">补全</button>
+        </div>
+        <p id="corefOne" class="hint" style="margin-top:10px">-</p>
+      </div>
+    </section>
+
+    <section id="tab-other" class="hidden">
+      <div class="card">
+        <button class="ghost" id="btnEnv" type="button">环境探测</button>
+        <button class="ghost" id="btnRun" type="button">跑意图金标</button>
+        <p id="sum" class="hint" style="margin-top:10px">-</p>
+        <div id="envBox" class="hint"></div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">意图金标</h2>
+        <table>
+          <thead><tr><th>结果</th><th>样本</th><th>期望</th><th>实际</th><th>工具</th></tr></thead>
+          <tbody id="goldBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">工具绑定</h2>
+        <table>
+          <thead><tr><th>结果</th><th>意图</th><th>期望</th><th>实际</th></tr></thead>
+          <tbody id="bindBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const SAMPLES = [
+      "头部常见有哪些病",
+      "头痛是什么疾病",
+      "胃炎有哪些症状",
+      "血常规这个检查是查什么的",
+      "转氨酶正常值是多少",
+      "空腹血糖参考范围是多少",
+    ];
+    const pick = $("kbPick");
+    SAMPLES.forEach((t, i) => {
+      const o = document.createElement("option");
+      o.value = t;
+      o.textContent = t;
+      if (i === 0) o.selected = true;
+      pick.appendChild(o);
+    });
+    $("kbText").value = pick.value;
+    pick.onchange = () => { $("kbText").value = pick.value; };
+
+    async function loadKbProbeCatalog() {
+      const box = $("kbProbeTools");
+      const sel = $("kbProbeHandler");
+      if (!box) return;
+      try {
+        const res = await fetch("/api/eval/kb/tools");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        box.innerHTML = (data.tools || []).map((t) =>
+          '<label style="display:flex;align-items:flex-start;gap:6px;max-width:320px">' +
+          '<input type="checkbox" class="kb-probe-tool" value="' + esc(t.name) + '" style="width:auto;margin-top:3px" />' +
+          "<span><b>" + esc(t.name) + "</b> " + esc(t.title || "") +
+          (t.summary ? "<br><span class='hint'>" + esc(t.summary) + "</span>" : "") +
+          "</span></label>"
+        ).join("");
+        const handlers = data.handlers || [];
+        sel.innerHTML =
+          '<option value="">handler 默认（按工具）</option>' +
+          handlers.map((h) =>
+            '<option value="' + esc(h.handler) + '">' + esc(h.handler) +
+            (h.intent ? " · " + esc(h.intent) : "") + "</option>"
+          ).join("");
+      } catch (_err) {}
+    }
+    async function loadRagConfig() {
+      const el = $("kbProbeRagEnhance");
+      if (!el) return;
+      try {
+        const res = await fetch("/api/eval/rag-config");
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.enabled != null) el.checked = !!data.enabled;
+      } catch (_err) {}
+    }
+    loadKbProbeCatalog();
+    loadRagConfig();
+
+    $("btnKbProbe").onclick = async () => {
+      const query = ($("kbProbeText").value || $("kbText").value || "").trim();
+      const tools = Array.from(document.querySelectorAll(".kb-probe-tool:checked")).map((el) => el.value);
+      if (!query) {
+        $("kbProbeHint").textContent = "请先输入问题";
+        return;
+      }
+      if (!tools.length) {
+        $("kbProbeHint").textContent = "请勾选至少一个工具";
+        return;
+      }
+      $("kbProbeHint").textContent = "抽实体并调用工具中…";
+      $("kbProbeTiming").textContent = "用时：计时中…";
+      $("btnKbProbe").disabled = true;
+      const tClient = performance.now();
+      try {
+        const res = await fetch("/api/eval/kb/tools", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            tools,
+            handler: $("kbProbeHandler").value || "",
+            rag_enhanced: $("kbProbeRagEnhance").checked,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("kbProbeHint").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+        const m = data.mentions || {};
+        $("kbProbeMentions").textContent = Object.keys(m).length
+          ? Object.entries(m).map(([k, v]) => k + "=" + (v || []).join(",")).join("；")
+          : "（无）";
+        $("kbProbeAlign").textContent = (data.alignments || []).length
+          ? (data.alignments || []).map((a) => (a.mention || "") + "→" + (a.standard_name || "")).join("；")
+          : "（无）";
+        $("kbProbeCalled").textContent = (data.tool_results || []).map((r) => r.tool).join("、") || "-";
+        const timing = data.timing || {};
+        const clientMs = Math.round(performance.now() - tClient);
+        const perTool = (data.tool_results || [])
+          .map((r) => (r.tool || "") + " " + (r.elapsed_ms != null ? r.elapsed_ms + "ms" : "-"))
+          .join(" · ");
+        $("kbProbeTiming").textContent =
+          "用时：抽实体 " + (timing.extract_ms != null ? timing.extract_ms + "ms" : "-") +
+          " · 调工具 " + (timing.tools_ms != null ? timing.tools_ms + "ms" : "-") +
+          (perTool ? "（" + perTool + "）" : "") +
+          " · 服务端合计 " + (timing.total_ms != null ? timing.total_ms + "ms" : "-") +
+          " · 端到端 " + clientMs + "ms";
+        $("kbProbeOut").textContent = JSON.stringify(data, null, 2);
+        $("kbProbeHint").textContent = "完成（未走细意图分类）";
+      } catch (err) {
+        $("kbProbeHint").textContent = String(err.message || err);
+      } finally {
+        $("btnKbProbe").disabled = false;
+      }
+    };
+
+    document.querySelectorAll(".tabs button").forEach((btn) => {
+      btn.onclick = () => {
+        document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("on"));
+        btn.classList.add("on");
+        $("tab-kb").classList.toggle("hidden", btn.dataset.tab !== "kb");
+        $("tab-ragflow").classList.toggle("hidden", btn.dataset.tab !== "ragflow");
+        $("tab-file").classList.toggle("hidden", btn.dataset.tab !== "file");
+        $("tab-coref").classList.toggle("hidden", btn.dataset.tab !== "coref");
+        $("tab-other").classList.toggle("hidden", btn.dataset.tab !== "other");
+      };
+    });
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+      );
+    }
+    function looksLikeHtmlTable(s) {
+      return /<table[\s>]/i.test(String(s || ""));
+    }
+    function sanitizeTableHtml(html) {
+      let h = String(html || "");
+      h = h.replace(/<script[\s\S]*?<\/script>/gi, "");
+      h = h.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+      return h;
+    }
+    function renderFileTablePreview(engine, te, pre) {
+      const host = $("fileTables");
+      if (!host) return;
+      const blocks = [];
+      if (engine === "unstructured") {
+        (te.tables || []).forEach((row, i) => {
+          const html = String(row.html || "");
+          const page = row.page != null ? row.page : "";
+          const cap = "表 " + (i + 1) + (page !== "" ? " · 第 " + page + " 页" : "");
+          if (looksLikeHtmlTable(html)) {
+            blocks.push(
+              "<div class='file-table-item'><div class='file-table-cap'>" + esc(cap) +
+              "</div><div class='file-table-render'>" + sanitizeTableHtml(html) + "</div>" +
+              (row.text ? "<div class='hint file-table-text'>" + esc(row.text) + "</div>" : "") +
+              "</div>"
+            );
+          } else if (row.text || html) {
+            blocks.push(
+              "<div class='file-table-item'><div class='file-table-cap'>" + esc(cap) +
+              "</div><pre class='file-table-fallback'>" + esc(row.text || html) + "</pre></div>"
+            );
+          }
+        });
+        if (!blocks.length) {
+          host.className = "file-table-host hint";
+          host.textContent = te.error
+            ? ("未渲染表格：" + te.error)
+            : "无 Table 元素（可勾选 infer_table_structure 或换 hi_res 再试）";
+          return;
+        }
+      } else {
+        (pre.tables || []).forEach((blob, i) => {
+          const html = String(blob || "");
+          const cap = "表 " + (i + 1) + " · 原方式闸门切块";
+          if (looksLikeHtmlTable(html)) {
+            blocks.push(
+              "<div class='file-table-item'><div class='file-table-cap'>" + esc(cap) +
+              "</div><div class='file-table-render'>" + sanitizeTableHtml(html) + "</div></div>"
+            );
+          } else if (html.trim()) {
+            blocks.push(
+              "<div class='file-table-item'><div class='file-table-cap'>" + esc(cap) +
+              "</div><pre class='file-table-fallback'>" + esc(html) + "</pre></div>"
+            );
+          }
+        });
+        if (!blocks.length) {
+          host.className = "file-table-host hint";
+          host.textContent = "原方式未产出 HTML 表（layout_only 或未识别到表格区域）";
+          return;
+        }
+      }
+      host.className = "file-table-host";
+      host.innerHTML = blocks.join("");
+    }
+    function renderLayoutEval(ids, data) {
+      const phasesEl = $(ids.phases);
+      const pagesEl = $(ids.pages);
+      const blocksEl = $(ids.blocks);
+      if (phasesEl) {
+        phasesEl.innerHTML = (data.phases || []).length
+          ? (data.phases || []).map((ph) => {
+              const branches = (ph.branches || []).map((b) =>
+                "<tr><td>" + esc(b.cond) + "</td><td>" + esc(b.handler) + "</td><td>" + esc(b.note) + "</td></tr>"
+              ).join("");
+              const facts = (ph.facts || []).map((f) =>
+                "<div style='display:inline-block;margin:0 12px 4px 0'><b>" + esc(f[0]) + "</b> " + esc(f[1]) + "</div>"
+              ).join("");
+              return "<div style='margin:0 0 16px'>" +
+                "<div style='font-weight:600;margin-bottom:2px'>" + esc(ph.title) + "</div>" +
+                (ph.aim ? "<div class='hint' style='margin:0 0 8px'>" + esc(ph.aim) + "</div>" : "") +
+                "<table><thead><tr><th>条件</th><th>怎么处理</th><th>说明</th></tr></thead><tbody>" +
+                branches + "</tbody></table>" +
+                "<div class='meta' style='margin-top:8px'>" + facts + "</div></div>";
+            }).join("")
+          : "<div class='hint'>本次没有分块前信息</div>";
+      }
+      if (pagesEl) {
+        pagesEl.innerHTML = (data.page_rows || []).length
+          ? (data.page_rows || []).map((p) =>
+              "<tr><td>" + esc(p.page) + "</td><td>" + esc(p.chars) + "</td><td>" + esc(p.native) + "</td><td>" +
+              esc(p.ocr) + "</td><td>" + esc(p.backend) + "</td><td>" + esc(p.regions) + "</td><td>" + esc(p.lines) + "</td></tr>"
+            ).join("")
+          : "<tr><td colspan='7'>无逐页信息</td></tr>";
+      }
+      if (blocksEl) {
+        blocksEl.innerHTML = (data.block_samples || []).length
+          ? (data.block_samples || []).map((p) =>
+              "<tr><td>" + esc(p.type) + "</td><td>" + esc(p.page) + "</td><td>" + esc(p.text) + "</td></tr>"
+            ).join("")
+          : "<tr><td colspan='3'>无 content_blocks 样例</td></tr>";
+      }
+    }
+    function fillChunkCfg(row) {
+      if (!row) return;
+      $("cfgEmbProv").value = row.embedding_provider || "";
+      $("cfgEmbModel").value = row.embedding_model || "";
+      $("cfgRfEmb").value = row.ragflow_embedding_model || "";
+      $("cfgToken").value = row.chunk_token_num ?? "";
+      $("cfgLocalMax").value = row.local_max_chars ?? "";
+      $("cfgNaive").value = row.local_naive_chars ?? "";
+      $("cfgOverlap").value = row.local_overlap ?? "";
+      $("cfgMethod").value = row.chunk_method || "";
+      const delim = row.delimiter === "\n" ? "\\n" : (row.delimiter || "");
+      $("cfgDelim").value = delim;
+      $("cfgLayout").value = row.layout_recognize || "";
+    }
+
+    function collectChunkCfg() {
+      return {
+        embedding_provider: $("cfgEmbProv").value.trim(),
+        embedding_model: $("cfgEmbModel").value.trim(),
+        ragflow_embedding_model: $("cfgRfEmb").value.trim(),
+        chunk_token_num: Number($("cfgToken").value),
+        local_max_chars: Number($("cfgLocalMax").value),
+        local_naive_chars: Number($("cfgNaive").value),
+        local_overlap: Number($("cfgOverlap").value),
+        chunk_method: $("cfgMethod").value.trim(),
+        delimiter: $("cfgDelim").value,
+        layout_recognize: $("cfgLayout").value.trim(),
+      };
+    }
+
+    async function loadChunkCfg() {
+      try {
+        const res = await fetch("/api/eval/chunk-config");
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) fillChunkCfg(data);
+      } catch (_err) {}
+    }
+    loadChunkCfg();
+
+    $("btnRfCfg").onclick = async () => {
+      $("rfCfgHint").textContent = "保存中…";
+      try {
+        const res = await fetch("/api/eval/chunk-config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectChunkCfg()),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("rfCfgHint").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+        fillChunkCfg(data);
+        $("rfCfgHint").textContent = "已保存（当前进程）。下次入库会用这些值。";
+      } catch (err) {
+        $("rfCfgHint").textContent = String(err.message || err);
+      }
+    };
+
+    function pill(ok) {
+      return '<span class="pill ' + (ok ? "ok" : "bad") + '">' + (ok ? "通过" : "失败") + "</span>";
+    }
+
+    $("btnKb").onclick = async () => {
+      const query = $("kbText").value.trim();
+      if (!query) return;
+      $("kbIntent").textContent = "请求中…";
+      $("btnKb").disabled = true;
+      try {
+        const res = await fetch("/api/eval/kb", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("kbIntent").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+      const kb = data.kb || {};
+      $("kbHint").textContent =
+        (kb.reachable ? "RAGFlow 通 · " : "") +
+        (data.rerank_rule || "") +
+        (kb.error ? " · " + kb.error : "");
+      $("kbIntent").textContent =
+        (data.major || "-") + " / " + (data.intent || "-") + " / " + (data.handler || "-") +
+        (data.intent_source ? "（" + data.intent_source + "）" : "");
+      $("kbTools").textContent = (data.tools || []).join("、") || "（空）";
+      $("kbChan").textContent = data.channel || "-";
+      const mentions = data.mentions || {};
+      const extractBits = Object.keys(mentions).map((k) => {
+        const vals = (mentions[k] || []).filter(Boolean);
+        return vals.length ? k + "：" + vals.join("、") : "";
+      }).filter(Boolean);
+      const seedTxt = (data.seeds || []).filter(Boolean).join("、");
+      $("kbExtract").textContent =
+        (extractBits.join("；") || "未抽出") + (seedTxt ? " · 种子：" + seedTxt : "");
+      const aligns = data.alignments || [];
+      $("kbAlign").textContent = aligns.length
+        ? aligns.map((a) =>
+            (a.mention || "?") + " → " + (a.standard_name || a.mention || "?") +
+            (a.node_label ? "（" + a.node_label + "）" : "")
+          ).join("；")
+        : "未对齐";
+      const milvus = data.milvus || {};
+      $("kbMilvus").innerHTML =
+        '<span class="pill ' + (milvus.queried ? "ok" : "bad") + '">' +
+        (milvus.queried ? "已查询" : "未查询") + "</span> " +
+        esc(milvus.detail || "");
+      const rows = data.rerank || [];
+      $("kbBody").innerHTML = rows.length ? rows.map((r) => {
+        const mv = Number(r.moved || 0);
+        const mvHtml = mv > 0 ? '<span class="up">↑' + mv + "</span>"
+          : mv < 0 ? '<span class="down">↓' + Math.abs(mv) + "</span>" : "—";
+        return "<tr><td>" + esc(r.recall_rank) + "</td><td>" + esc(r.rerank_rank) +
+          "</td><td>" + mvHtml + "</td><td>" + esc(r.score) + "</td><td>" +
+          esc(r.keyword_hits) + "</td><td>" + esc(r.text) + "</td></tr>";
+      }).join("") : "<tr><td colspan='6'>没有召回块"
+        + (data.summary ? " · " + esc(data.summary) : "")
+        + (data.seeds && data.seeds.length ? " · 种子 " + esc((data.seeds || []).join("、")) : "")
+        + "</td></tr>";
+      } catch (err) {
+        $("kbIntent").textContent = String(err.message || err);
+      } finally {
+        $("btnKb").disabled = false;
+      }
+    };
+
+    function slotParse(raw) {
+      const out = {};
+      const t = String(raw || "").trim();
+      if (!t) return out;
+      const m = t.match(/^([\u4e00-\u9fff]+)\s*[=:：]\s*(.+)$/);
+      if (!m) return out;
+      out[m[1]] = [m[2].trim()];
+      return out;
+    }
+
+    $("btnCorefGold").onclick = async () => {
+      $("corefSum").textContent = "运行中…";
+      $("btnCorefGold").disabled = true;
+      try {
+        const res = await fetch("/api/eval/coref", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ gold: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("corefSum").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+        $("corefSum").textContent = "通过 " + data.passed + " / " + data.total;
+        $("corefBody").innerHTML = (data.rows || []).map((r) => {
+          const slots = r.slots && Object.keys(r.slots).length
+            ? Object.entries(r.slots).map(([k, v]) => k + "=" + (v || []).join("/")).join("；")
+            : "（无槽）";
+          return "<tr><td>" + pill(r.ok) + "</td><td>" + esc(r.title) +
+            "</td><td>" + esc(r.prior) + "<br>" + esc(slots) +
+            "</td><td>" + esc(r.query) +
+            "</td><td>" + (r.got_changed ? "已改写" : "未改写") + " · " +
+            esc(r.got_reason) + "<br>" + esc(r.got_text) +
+            (r.fail && r.fail.length ? "<br>" + esc(r.fail.join("；")) : "") +
+            "</td><td>" + esc(r.got_source || "-") + "</td></tr>";
+        }).join("");
+      } catch (err) {
+        $("corefSum").textContent = String(err.message || err);
+      } finally {
+        $("btnCorefGold").disabled = false;
+      }
+    };
+
+    $("btnCorefOne").onclick = async () => {
+      const query = $("corefQuery").value.trim();
+      if (!query) return;
+      $("corefOne").textContent = "请求中…";
+      try {
+        const res = await fetch("/api/eval/coref", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            gold: false,
+            query,
+            prior: $("corefPrior").value.trim(),
+            slot_memory: slotParse($("corefSlot").value),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("corefOne").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+        $("corefOne").innerHTML =
+          (data.got_changed ? "已改写" : "未改写") + " · " + esc(data.got_source || "") +
+          " · " + esc(data.got_reason) +
+          "<br>结果：" + esc(data.got_text);
+      } catch (err) {
+        $("corefOne").textContent = String(err.message || err);
+      }
+    };
+
+    $("btnRf").onclick = async () => {
+      const input = $("rfPick");
+      const file = input && input.files && input.files[0];
+      if (!file) {
+        $("rfHint").textContent = "先选 PDF";
+        return;
+      }
+      $("rfHint").textContent = "入库评测中（本地版面识别约 1 分钟，写 RAGFlow 视服务快慢可能数分钟）…";
+      $("btnRf").disabled = true;
+      try {
+        const body = new FormData();
+        body.append("file", file, file.name);
+        const src = $("rfSource").value || "local";
+        const skip = $("rfSkip") && $("rfSkip").checked ? "1" : "0";
+        const cfg = collectChunkCfg();
+        const qs = new URLSearchParams({
+          chunk_source: src,
+          skip_ragflow: skip,
+          chunk_token_num: String(cfg.chunk_token_num || ""),
+          local_max_chars: String(cfg.local_max_chars || ""),
+          local_naive_chars: String(cfg.local_naive_chars || ""),
+          local_overlap: String(cfg.local_overlap || ""),
+          embedding_model: cfg.embedding_model || "",
+          ragflow_embedding_model: cfg.ragflow_embedding_model || "",
+        });
+        const res = await fetch("/api/eval/ragflow-ingest?" + qs.toString(), {
+          method: "POST",
+          body,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("rfHint").textContent = data.detail || ("HTTP " + res.status);
+          $("rfOk").innerHTML = pill(false);
+          return;
+        }
+        $("rfOk").innerHTML = pill(!!data.ok) + (data.local_only ? " 仅本地" : "");
+        $("rfMethod").textContent = data.method || src;
+        const rf = data.ragflow || {};
+        const web = (rf.web_url || (data.steps || []).map((s) => (s.extra || {}).web_url).filter(Boolean)[0] || "");
+        $("rfWeb").innerHTML = web ? '<a href="' + esc(web) + '" target="_blank">' + esc(web) + "</a>" : "-";
+        if (data.chunk_config) fillChunkCfg(data.chunk_config);
+        $("rfHint").textContent = data.ok
+          ? (data.local_only
+              ? (data.skip_ragflow ? "本地分块完成，按选项跳过 RAGFlow 写入" : "本地分块完成，RAGFlow 未写入")
+              : "链路完成")
+          : "有步骤失败";
+        renderLayoutEval({ phases: "rfPhases", pages: "rfPages", blocks: "rfBlocks" }, data);
+        $("rfSteps").innerHTML = (data.steps || []).filter((s) => !s.extra || !s.extra.phase).map((s) => {
+          const ops = (s.extra && s.extra.ops) || [];
+          const opsHtml = ops.length
+            ? "<ul style='margin:6px 0 0 18px;padding:0'>" + ops.map((o) => "<li>" + esc(o) + "</li>").join("") + "</ul>"
+            : "";
+          return "<tr><td>" + pill(!!s.ok) + "</td><td>" + esc(s.title) +
+            "</td><td>" + esc(s.detail) + opsHtml + "</td></tr>";
+        }).join("");
+        $("rfPrev").innerHTML = (data.previews || []).length
+          ? (data.previews || []).map((p) =>
+              "<tr><td>" + esc(p.ord) + "</td><td>" + esc(p.page) + "</td><td>" + esc(p.text) + "</td></tr>"
+            ).join("")
+          : "<tr><td colspan='3'>无预览</td></tr>";
+      } catch (err) {
+        $("rfHint").textContent = String(err.message || err);
+      } finally {
+        $("btnRf").disabled = false;
+      }
+    };
+
+    function syncFileUsOpts() {
+      const mode = ($("fileTableMode") && $("fileTableMode").value) || "gate";
+      const gateBox = $("fileGateOpts");
+      const usBox = $("fileUsOpts");
+      if (gateBox) gateBox.style.display = mode === "gate" ? "block" : "none";
+      if (usBox) usBox.style.display = mode === "unstructured" ? "block" : "none";
+    }
+    if ($("fileTableMode")) {
+      $("fileTableMode").onchange = syncFileUsOpts;
+      syncFileUsOpts();
+    }
+
+    $("btnFile").onclick = async () => {
+      const input = $("filePick");
+      const file = input && input.files && input.files[0];
+      if (!file) {
+        $("fileHint").textContent = "先选文件";
+        return;
+      }
+      $("fileHint").textContent = "评测中…";
+      $("btnFile").disabled = true;
+      try {
+        const body = new FormData();
+        body.append("file", file, file.name);
+        const mode = ($("fileTableMode") && $("fileTableMode").value) || "gate";
+        const qs = new URLSearchParams({ table_engine: mode });
+        if (mode === "gate") {
+          qs.set("gate_lab_threshold", String(parseInt(($("gateLabThreshold") && $("gateLabThreshold").value) || "2", 10) || 2));
+          qs.set("gate_layout_only", ($("gateLayoutOnly") && $("gateLayoutOnly").checked) ? "1" : "0");
+          qs.set("gate_run_explain", ($("gateRunExplain") && $("gateRunExplain").checked) ? "1" : "0");
+        }
+        if (mode === "unstructured") {
+          qs.set("us_strategy", ($("usStrategy") && $("usStrategy").value) || "hi_res");
+          qs.set("us_infer_table", ($("usInferTable") && $("usInferTable").checked) ? "1" : "0");
+          qs.set("us_languages", ($("usLangs") && $("usLangs").value.trim()) || "eng,chi_sim");
+        }
+        const res = await fetch("/api/eval/file?" + qs.toString(), { method: "POST", body });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("fileHint").textContent = data.detail || ("HTTP " + res.status);
+          return;
+        }
+        const card = data.score_card || {};
+        const intent = data.intent || {};
+        const pre = data.preprocess || {};
+        $("fileScore").textContent =
+          String(card.score ?? "-") + " / 阈值 " + String(card.threshold ?? 2) +
+          (card.lab_report ? " · 报告解读" : " · 非报告");
+        $("fileIntent").textContent =
+          (intent.major || "-") + " / " + (intent.intent || "-") + " / " + (intent.handler || "-");
+        $("fileArt").textContent =
+          (pre.artifact === "pdf" ? "PDF " + (pre.mineru_pdf_path || "") :
+            pre.artifact === "structured_chunks" ? "结构化块 JSON" : "空") +
+          (data.tools && data.tools.length ? " · 工具 " + data.tools.join("、") : "") +
+          " · 表格方式 " + (data.table_engine || mode);
+        $("fileHint").textContent = (pre.reasons || []).join("；") || data.filename || "完成";
+        $("fileScoreBody").innerHTML = (card.points || []).map((p) =>
+          "<tr><td>" + esc(p.name) + "</td><td>" + (p.hit ? "是" : "否") +
+          "</td><td>" + esc(p.delta) + "</td><td>" + esc(p.detail) + "</td></tr>"
+        ).join("");
+        renderLayoutEval({ phases: "filePhases", pages: "filePages", blocks: "fileBlocks" }, data);
+        const te = data.table_extract || {};
+        const go = data.gate_options || {};
+        if (data.table_engine === "unstructured") {
+          const lo = te.loader_options || {};
+          const optTxt = lo.strategy
+            ? (" · strategy=" + lo.strategy + " infer=" + lo.infer_table_structure + " lang=" + (lo.languages || []).join(","))
+            : "";
+          $("fileTableHint").textContent = te.ok
+            ? ("新方式 · 抽到 " + (te.table_count || 0) + " 张表" + optTxt)
+            : ("新方式失败 · " + (te.error || "未知") + optTxt);
+        } else {
+          const gtxt = go.lab_threshold != null
+            ? (" · 阈值=" + go.lab_threshold + " layout_only=" + go.layout_only + " explain=" + go.run_explain + " strategy=" + (go.strategy || "hi_res"))
+            : "";
+          $("fileTableHint").textContent = "原方式 · 闸门切块 / MinerU" + gtxt;
+        }
+        renderFileTablePreview(data.table_engine || mode, te, pre);
+        $("filePre").textContent = JSON.stringify(pre, null, 2);
+        if (data.report_split) {
+          $("fileSplitHint").textContent = data.report_split.summary || "已拆表";
+          $("fileSplit").textContent = JSON.stringify(data.report_split, null, 2);
+        } else {
+          $("fileSplitHint").textContent = data.table_engine === "unstructured"
+            ? "新方式不走 MinerU explain_uploaded_report"
+            : (data.role === "lab_report" && go.run_explain === false
+                ? "原方式：已关闭 run_explain，未跑 MinerU 拆表"
+                : "本轮不是报告解读，不跑拆表");
+          $("fileSplit").textContent = "-";
+        }
+      } catch (err) {
+        $("fileHint").textContent = String(err.message || err);
+      } finally {
+        $("btnFile").disabled = false;
+      }
+    };
+
+    $("btnEnv").onclick = async () => {
+      $("envBox").textContent = "探测中…";
+      const res = await fetch("/api/eval/env");
+      const data = await res.json();
+      $("envBox").innerHTML = (data.checks || []).map((c) =>
+        pill(c.ok) + " " + esc(c.name) + " " + esc(c.detail)
+      ).join("<br>");
+    };
+    $("btnRun").onclick = async () => {
+      $("sum").textContent = "运行中…";
+      const res = await fetch("/api/eval/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const data = await res.json();
+      $("sum").textContent = "通过 " + data.passed + " / " + data.total;
+      $("goldBody").innerHTML = (data.gold || []).map((r) =>
+        "<tr><td>" + pill(r.ok) + "</td><td>" + esc(r.text) + "</td><td>" +
+        esc(r.expect_major) + " / " + esc(r.expect_handler) + "</td><td>" +
+        esc(r.got_major) + " / " + esc(r.got_handler) + "</td><td>" +
+        esc((r.got_tools || []).join("、") || "空") + "</td></tr>"
+      ).join("");
+      $("bindBody").innerHTML = (data.binds || []).map((r) =>
+        "<tr><td>" + pill(r.ok) + "</td><td>" + esc(r.text) + "</td><td>" +
+        esc((r.expect_tools || []).join("、") || "空") + "</td><td>" +
+        esc((r.got_tools || []).join("、") || "空") + "</td></tr>"
+      ).join("");
+    };
+  </script>
+</body>
+</html>
