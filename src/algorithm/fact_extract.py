@@ -453,12 +453,9 @@ def _normalize_time_fact(item: dict[str, Any], ref: datetime) -> dict[str, Any]:
 def _entity_facts(text: str) -> list[dict[str, Any]]:
     """关场写入 CompanionFact 的部位/病/症 span，不依赖生活词表。"""
     try:
-        from configs.paths_b2c import b2b_src_imports
+        from b2c_b2b_bridge import b2b_uie_extract
 
-        with b2b_src_imports():
-            from algorithm.uie_extract import extract_entity
-
-            extracted = extract_entity(text, ["部位", "疾病", "症状"])
+        extracted = b2b_uie_extract().extract_entity(text, ["部位", "疾病", "症状"])
     except Exception:
         logger.warning("companion entity facts skipped", exc_info=True)
         return []

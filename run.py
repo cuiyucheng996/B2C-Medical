@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("VECTOR_STORE_BACKEND", "chroma")
 
 import uvicorn
 

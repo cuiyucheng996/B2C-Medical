@@ -16,7 +16,7 @@ __all__ = [
     "lookup_life_facts",
     "query_consult_graph",
     "search_exam_handbook",
-    "search_milvus_knowledge",
+    "search_chroma_knowledge",
     "note_task_remind",
     "note_task_checkin",
     "note_task_medication",
@@ -193,16 +193,16 @@ def search_exam_handbook(query: str = "") -> str:
 
 
 @tool
-def search_milvus_knowledge(query: str = "") -> str:
-    """只查 Milvus 疾病/症状向量库。不要编症状清单。"""
-    from algorithm.kg_query import search_milvus_knowledge as run
+def search_chroma_knowledge(query: str = "") -> str:
+    """只查 Chroma 疾病/症状向量库。不要编症状清单。"""
+    from algorithm.kg_query import search_chroma_knowledge as run
 
     _name, text, mentions, _alignments = _kg_turn_query(query)
     extra = []
     for key in ("部位", "疾病", "症状", "检查", "指标"):
         extra.extend(mentions.get(key) or [])
     q = " ".join(part for part in [text, *extra] if part).strip() or text
-    return _kg_dump("search_milvus_knowledge", run(query=q, handler=_name))
+    return _kg_dump("search_chroma_knowledge", run(query=q, handler=_name))
 
 
 def _report_dump(tool: str, payload: dict[str, Any], *, retryable: bool = True) -> str:
@@ -438,7 +438,7 @@ def _task_note(
 
 @tool
 def note_task_remind(when: str = "", start_iso: str = "") -> str:
-    """记下复查/随访提醒并推到 n8n 定时发提醒。不处理打卡、服药、复诊预约、取报告。when 为口语时间；有 Time MCP 结果时填 start_iso。"""
+    """记下到点提醒并推到 n8n。复查、赶飞机、办事都可以。不处理打卡、服药、复诊预约、取报告。when 为口语时间；有 Time MCP 结果时填 start_iso。"""
     hitl = _hitl_answer()
     when_text = (when or "").strip() or hitl
     query = str(_turn().get("query") or "")
@@ -552,7 +552,7 @@ def mark_companion_tools() -> None:
     mark_companion_tool(safety_policy_hint, "safety")
     mark_companion_tool(query_consult_graph, "knowledge")
     mark_companion_tool(search_exam_handbook, "knowledge")
-    mark_companion_tool(search_milvus_knowledge, "knowledge")
+    mark_companion_tool(search_chroma_knowledge, "knowledge")
     mark_companion_tool(lookup_stated_consult, "memory")
     mark_companion_tool(
         lookup_life_facts,

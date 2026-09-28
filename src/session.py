@@ -1,4 +1,4 @@
-"""B2C 陪聊会话：Graphiti 的 group_id = 用户；无问诊轮次。"""
+"""B2C 陪聊会话：group_id/user_id = 用户；session_id = 本场 Redis short/compress + 主图 checkpoint。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,12 @@ from typing import Any
 from uuid import uuid4
 
 __all__ = ["CompanionSession", "SessionStore", "get_session_store"]
+
+
+def _session_memory_mod():
+    from configs.paths_b2c import import_b2c_algorithm
+
+    return import_b2c_algorithm("session_memory")
 
 
 def _utc_now() -> str:
@@ -25,6 +31,7 @@ class CompanionSession:
     last_file: dict[str, Any] | None = None
     slot_memory: dict[str, list[str]] = field(default_factory=lambda: {"疾病": [], "症状": [], "部位": []})
     persisted: bool = False
+    last_activity_at: str = ""
 
     @property
     def group_id(self) -> str:
@@ -39,7 +46,11 @@ class CompanionSession:
             "timestamp": _utc_now(),
         }
         self.user.append(item)
+        self.touch()
         return item
+
+    def touch(self) -> None:
+        self.last_activity_at = _utc_now()
 
     def merge_slot_memory(self, preprocess: dict[str, Any] | None) -> None:
         """本轮抽出的部位/病/症并入整场槽位，新出现的放最前。"""
@@ -96,31 +107,75 @@ class CompanionSession:
             "last_file": self.last_file,
             "slot_memory": {key: list(val) for key, val in (self.slot_memory or {}).items()},
             "user": list(self.user),
+            "last_activity_at": self.last_activity_at,
         }
 
 
 class SessionStore:
-    """一人一场进行中的会话，按 user_id 取。session_id 只给 Graphiti thread 用。"""
+    """一人一场进行中的会话，按 user_id 取。"""
 
     def __init__(self) -> None:
         self._by_user: dict[str, CompanionSession] = {}
 
-    def create(self, user_id: str) -> CompanionSession:
+    def get_active_for_user(self, user_id: str) -> CompanionSession | None:
+        uid = (user_id or "").strip()
+        if not uid:
+            return None
+        return self._by_user.get(uid)
+
+    def create(self, user_id: str, *, force: bool = False) -> CompanionSession:
         uid = (user_id or "").strip()
         if not uid:
             raise ValueError("user_id 不能为空")
+        existing = self._by_user.get(uid)
+        if existing is not None and not force:
+            return existing
         session = CompanionSession(
             session_id=str(uuid4()),
             user_id=uid,
             created_at=_utc_now(),
+            last_activity_at=_utc_now(),
         )
-        from algorithm.short_memory import load_b2c_slot_memory
-
-        restored = load_b2c_slot_memory(uid)
-        if any(restored.get(key) for key in ("疾病", "症状", "部位")):
-            session.slot_memory = restored
+        sm = _session_memory_mod()
+        session.slot_memory = sm.validate_slot_memory_for_session(
+            session.slot_memory,
+            user_id=uid,
+            session_id=session.session_id,
+        )
         self._by_user[uid] = session
         return session
+
+    def create_new(self, user_id: str) -> CompanionSession:
+        """显式新开一场，替换该用户进行中的会话。"""
+        uid = (user_id or "").strip()
+        if not uid:
+            raise ValueError("user_id 不能为空")
+        existing = self._by_user.get(uid)
+        if existing is not None:
+            sm = _session_memory_mod()
+            sm.release_session_runtime_state(
+                existing.user_id,
+                existing.session_id,
+                clear_slots=False,
+                clear_checkpoint=True,
+            )
+        session = CompanionSession(
+            session_id=str(uuid4()),
+            user_id=uid,
+            created_at=_utc_now(),
+            last_activity_at=_utc_now(),
+        )
+        sm = _session_memory_mod()
+        session.slot_memory = sm.validate_slot_memory_for_session(
+            session.slot_memory,
+            user_id=uid,
+            session_id=session.session_id,
+        )
+        self._by_user[uid] = session
+        return session
+
+    def list_active(self) -> list[CompanionSession]:
+        return list(self._by_user.values())
 
     def get(self, key: str) -> CompanionSession | None:
         token = (key or "").strip()

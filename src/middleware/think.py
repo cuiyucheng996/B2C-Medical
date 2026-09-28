@@ -46,4 +46,11 @@ class CompanionThinkMiddleware(AgentMiddleware):
             return None
         nxt = count + 1
         hint = hint_from_verdict(verdict, think_count=nxt)
+        from middleware.middleware_trace import append_middleware_trace
+
+        append_middleware_trace(
+            "CompanionThinkMiddleware",
+            f"思考模式第 {nxt} 轮：注入工具证据审核提示",
+            runtime=runtime,
+        )
         return {"think_count": nxt, "messages": [*messages, HumanMessage(content=hint)]}

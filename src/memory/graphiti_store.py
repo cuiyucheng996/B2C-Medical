@@ -94,9 +94,6 @@ def persist_session_findings(session: CompanionSession) -> dict[str, Any]:
             ingested += 1
             msg["ingested"] = True
     session.persisted = True
-    from algorithm.short_memory import clear_b2c_short_memory
-
-    clear_b2c_short_memory(session.group_id)
     return {
         "ok": True,
         "deferred": False,

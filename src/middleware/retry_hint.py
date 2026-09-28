@@ -25,7 +25,6 @@ class CompanionRetryHintMiddleware(AgentMiddleware):
     state_schema = RetryHintState
 
     def before_model(self, state: AgentState[Any], runtime: Any) -> dict[str, Any] | None:
-        del runtime
         if state.get("retry_hinted"):
             return None
         messages = list(state.get("messages") or [])
@@ -39,6 +38,13 @@ class CompanionRetryHintMiddleware(AgentMiddleware):
             return None
         if not all(_retryable_empty(msg) for msg in tails):
             return None
+        from middleware.middleware_trace import append_middleware_trace
+
+        append_middleware_trace(
+            "CompanionRetryHintMiddleware",
+            "工具信封 usable=false 且可重试，提示模型再调一次",
+            runtime=runtime,
+        )
         return {
             "retry_hinted": True,
             "messages": [*messages, HumanMessage(content=_HINT)],

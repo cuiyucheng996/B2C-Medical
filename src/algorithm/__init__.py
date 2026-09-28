@@ -17,10 +17,15 @@ from algorithm.intent_classify import (
     normalize_intent_results,
 )
 from algorithm.intent_rule import match_intent, match_major_intent
-from algorithm.kg_query import fulfill_kg_intent, query_consult_graph, search_exam_handbook, search_milvus_knowledge
+from algorithm.kg_query import fulfill_kg_intent, query_consult_graph, search_chroma_knowledge, search_exam_handbook
 from algorithm.ragflow_kb import kb_status, list_documents, replace_pdf, retrieve_chunks
 from algorithm.reply_actions import reply_actions
-from algorithm.short_memory import clear_b2c_short_memory, load_b2c_short_messages, sync_b2c_short_memory
+from algorithm.short_memory import (
+    clear_b2c_short_memory,
+    load_b2c_agent_history,
+    load_b2c_short_messages,
+    sync_b2c_short_memory,
+)
 
 __all__ = [
     "CompanionIntentResult",
@@ -40,8 +45,9 @@ __all__ = [
     "fulfill_kg_intent",
     "query_consult_graph",
     "search_exam_handbook",
-    "search_milvus_knowledge",
+    "search_chroma_knowledge",
     "format_preprocess_for_agent",
+    "load_b2c_agent_history",
     "load_b2c_short_messages",
     "major_of",
     "intent_result_to_dict",

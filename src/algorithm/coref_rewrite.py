@@ -207,26 +207,37 @@ def _llm_complete(query: str, prior: list[str]) -> str:
                 invoke_model = llm.model_copy(update={"timeout": 6.0})
             except Exception:
                 invoke_model = llm
-        resp = invoke_model.invoke(
-            [
-                SystemMessage(
-                    content=(
-                        "你做指代补全。根据对话历史，把当前用户这句话改写成一句独立、可检索的中文问句，"
-                        "必须写明历史里的指代对象（可以是概念、指标、书名、很长一截说法）。"
-                        "只输出改写后的问句，不要解释。若无法补全，原样输出当前这句话。"
-                    )
-                ),
-                HumanMessage(content=f"历史：\n{history}\n\n当前：{query}"),
-            ]
-        )
+        from algorithm.llm_trace import STAGE_COREF, record_llm_call, serialize_langchain_messages
+
+        msgs = [
+            SystemMessage(
+                content=(
+                    "你做指代补全。根据对话历史，把当前用户这句话改写成一句独立、可检索的中文问句，"
+                    "必须写明历史里的指代对象（可以是概念、指标、书名、很长一截说法）。"
+                    "只输出改写后的问句，不要解释。若无法补全，原样输出当前这句话。"
+                )
+            ),
+            HumanMessage(content=f"历史：\n{history}\n\n当前：{query}"),
+        ]
+        resp = invoke_model.invoke(msgs)
         text = str(getattr(resp, "content", "") or "").strip().splitlines()[0].strip(" \"'`")
+        record_llm_call(
+            STAGE_COREF,
+            serialize_langchain_messages(msgs),
+            response=text,
+            label="coref _llm_complete",
+        )
         return text
 
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+    from algorithm.llm_trace import run_in_llm_trace_context
+
     pool = ThreadPoolExecutor(max_workers=1)
     try:
-        return str(pool.submit(_call).result(timeout=6) or "").strip()
+        return str(
+            pool.submit(lambda: run_in_llm_trace_context(_call)).result(timeout=6) or ""
+        ).strip()
     except FuturesTimeout:
         logger.warning("coref llm timeout")
         return ""

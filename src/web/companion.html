@@ -76,20 +76,61 @@
     button.mic-on { background: #b42318; color: #fff; }
     .debug-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
     .debug-head h2 { margin: 0; font-size: 16px; }
-    .debug-grid { display: grid; gap: 12px; }
-    .block h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
-    pre {
-      margin: 0;
+    .debug-grid { display: grid; gap: 14px; }
+    .block h3 { margin: 0 0 8px; font-size: 13px; color: var(--ink); font-weight: 650; }
+    .dbg {
+      background: #f4f8f5;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 4px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      max-height: 240px;
+      overflow: auto;
+    }
+    .dbg .row { display: grid; grid-template-columns: 4.5em 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid #e4eee8; }
+    .dbg .row:last-child { border-bottom: 0; }
+    .dbg .k { color: var(--muted); }
+    .dbg .v { white-space: pre-wrap; word-break: break-word; }
+    .dbg .empty { color: var(--muted); padding: 10px 0; }
+    .dbg .step-hd {
+      margin: 16px 0 6px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: 0.03em;
+    }
+    .dbg .step-hd:first-child { margin-top: 4px; }
+    .dbg .sec {
+      margin: 10px 0 0 4px;
+      padding-left: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      border-left: 2px solid #c5d9cc;
+    }
+    .dbg .sec.sec-em {
+      margin-top: 12px;
+      color: #3d5c48;
+      font-weight: 650;
+      border-left-color: var(--accent);
+    }
+    .dbg.dbg-tall { max-height: 520px; }
+    .dbg .para {
+      margin: 4px 0 6px 12px;
+      padding: 8px 10px;
+      background: #fff;
+      border-radius: 8px;
+      border: 1px solid #e8f0eb;
       white-space: pre-wrap;
       word-break: break-word;
-      background: var(--code);
-      color: var(--code-fg);
-      padding: 12px;
-      border-radius: 12px;
       font-size: 12px;
-      line-height: 1.45;
-      max-height: 220px;
-      overflow: auto;
+      line-height: 1.5;
     }
     .hint { color: var(--muted); font-size: 12px; }
     @media (max-width: 900px) {
@@ -104,8 +145,9 @@
     <div class="hero">
       <div>
         <h1>B2C 长期陪聊</h1>
-        <p class="sub">聊天只用短期 session。Finding 抽离在结束会话或关页时才入库。</p>
-        <p class="sub"><a href="/" style="color:#2f6f4e;">切换账号</a> · <a href="/tools" style="color:#2f6f4e;">工具注册表</a> · <a href="/eval" style="color:#2f6f4e;">评测台</a></p>
+        <p class="sub">进行中消息只在服务端 SessionStore；刷新/关页不释放。结束、新建、切换账号或空闲 TTL 会关场并写入 localStorage 草稿。</p>
+        <p class="sub b2c-user-bar"></p>
+        <p class="sub"><a href="/" id="linkSwitchUser" style="color:#2f6f4e;">切换账号</a> · <a href="/tools" style="color:#2f6f4e;">工具注册表</a> · <a href="/eval" style="color:#2f6f4e;">评测台</a></p>
       </div>
       <div class="meta">
         <span class="chip">session <strong id="chipSession">未创建</strong></span>
@@ -141,39 +183,435 @@
         </div>
         <div class="debug-grid">
           <div class="block">
-            <h3>进入 Agent 前预处理（纠错→意图→否定→抽实体→对齐→Cypher）</h3>
-            <pre id="dumpPrep">-</pre>
+            <h3>进入主图环节</h3>
+            <div class="dbg" id="dumpPrep"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
-            <h3>Agent 结构化返回</h3>
-            <pre id="dumpRound">-</pre>
+            <h3>怎么回答的</h3>
+            <div class="dbg" id="dumpRound"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
-            <h3>记忆检索 facts</h3>
-            <pre id="dumpFacts">-</pre>
+            <h3>各环节 LLM 调用上下文组成</h3>
+            <div class="dbg dbg-tall" id="dumpFacts"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
-            <h3>实体抽离入库 ingest</h3>
-            <pre id="dumpIngest">-</pre>
+            <h3>RAG增强</h3>
+            <div class="dbg dbg-tall" id="dumpRag"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
-            <h3>session 全量</h3>
-            <pre id="dumpSession">-</pre>
+            <h3>中间件的使用</h3>
+            <div class="dbg dbg-tall" id="dumpMiddleware"><div class="empty">还没有</div></div>
+          </div>
+          <div class="block">
+            <h3>trace</h3>
+            <div class="dbg dbg-tall" id="dumpTrace"><div class="empty">还没有</div></div>
+          </div>
+          <div class="block">
+            <h3>这场记住的词</h3>
+            <div class="dbg" id="dumpSession"><div class="empty">还没有</div></div>
           </div>
         </div>
       </aside>
     </div>
   </div>
-
+  <script src="/b2c_persist.js"></script>
   <script>
     let sessionId = "";
     let resumeToken = "";
     let closing = false;
+    let liveLlmRows = [];
+    let liveToolRows = [];
+    let liveMwRows = [];
     const $ = (id) => document.getElementById(id);
 
-    function pretty(value) {
-      if (value == null || value === "") return "-";
-      return JSON.stringify(value, null, 2);
+    function resetLiveDebug() {
+      liveLlmRows = [];
+      liveToolRows = [];
+      liveMwRows = [];
+      fillDbg($("dumpFacts"), []);
+      fillDbg($("dumpTrace"), []);
+      fillDbg($("dumpMiddleware"), []);
+    }
+
+    function appendLiveDebug(data) {
+      if (!data || !data.kind) return;
+      if (data.kind === "llm") {
+        liveLlmRows.push(["标题", data.step || "LLM"]);
+        (data.sections || []).forEach((sec) => {
+          if (!sec) return;
+          liveLlmRows.push(["节", sec.title || ""]);
+          liveLlmRows.push(["段", sec.body || ""]);
+        });
+        if (data.got) {
+          liveLlmRows.push(["节", "得到"]);
+          liveLlmRows.push(["段", data.got]);
+        }
+        fillDbg($("dumpFacts"), liveLlmRows);
+        return;
+      }
+      if (data.kind === "middleware") {
+        liveMwRows.push(["中间件", data.name || data.title || "中间件"]);
+        if (data.route) liveMwRows.push(["路线", data.route]);
+        liveMwRows.push(["段", data.body || ""]);
+        fillDbg($("dumpMiddleware"), liveMwRows);
+        return;
+      }
+      if (data.kind === "trace") {
+        const title = data.title || "子图 trace";
+        if (!data.append) {
+          liveToolRows.push(["标题", title]);
+          liveToolRows.push(["节", data.section || ""]);
+          liveToolRows.push(["段", data.body || ""]);
+        } else {
+          const prev = liveToolRows[liveToolRows.length - 1];
+          const sec = liveToolRows[liveToolRows.length - 2];
+          if (prev && prev[0] === "段" && sec && sec[0] === "节" && sec[1] === (data.section || "tool_call_chunks")) {
+            prev[1] += data.body || "";
+          } else {
+            liveToolRows.push(["标题", title]);
+            liveToolRows.push(["节", data.section || "tool_call_chunks"]);
+            liveToolRows.push(["段", data.body || ""]);
+          }
+        }
+        fillDbg($("dumpTrace"), liveToolRows);
+        return;
+      }
+      if (data.kind === "tool_call" || data.kind === "tool") {
+        appendLiveDebug({
+          kind: "trace",
+          title: "子图 · function call 流式 · " + (data.name || "?"),
+          section: "tool_call_chunks",
+          body: data.args_delta || data.body || data.summary || "",
+          append: data.kind === "tool_call",
+        });
+      }
+    }
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    }
+    function joinBits(v) {
+      if (v == null || v === "") return "";
+      if (Array.isArray(v)) return v.map((x) => (typeof x === "string" ? x : (x && (x.name || x.text || x.content || x.standard_name)) || "")).filter(Boolean).join("、");
+      if (typeof v === "object") return "";
+      return String(v);
+    }
+    function fillDbg(el, rows) {
+      const parts = [];
+      for (const r of rows || []) {
+        if (!r) continue;
+        if (r[0] === "标题") {
+          parts.push('<div class="step-hd">' + esc(r[1]) + "</div>");
+          continue;
+        }
+        if (r[0] === "节") {
+          const em = r[1] === "工具执行" || r[1] === "得到";
+          parts.push('<div class="sec' + (em ? " sec-em" : "") + '">' + esc(r[1]) + "</div>");
+          continue;
+        }
+        if (r[0] === "段") {
+          parts.push('<div class="para">' + esc(r[1]) + "</div>");
+          continue;
+        }
+        if (!String(r[1] || "").trim()) continue;
+        parts.push(
+          '<div class="row"><div class="k">' +
+            esc(r[0]) +
+            '</div><div class="v">' +
+            esc(r[1]) +
+            "</div></div>"
+        );
+      }
+      if (!parts.length) {
+        el.innerHTML = '<div class="empty">这一块没有内容</div>';
+        return;
+      }
+      el.innerHTML = parts.join("");
+    }
+    function mentionLines(mentions) {
+      const bag = mentions && typeof mentions === "object" ? mentions : {};
+      return Object.keys(bag).map((k) => {
+        const vals = joinBits(bag[k]);
+        return vals ? k + "：" + vals : "";
+      }).filter(Boolean).join("\n");
+    }
+    function alignLines(rows) {
+      return (rows || []).map((hit) => {
+        if (!hit || typeof hit !== "object") return "";
+        const said = hit.mention || hit.text || "";
+        const std = hit.standard_name || hit.name || "";
+        if (!said && !std) return "";
+        return said && std && said !== std ? said + " → " + std : (std || said);
+      }).filter(Boolean).join("\n");
+    }
+    function factLines(facts) {
+      return (facts || []).map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        return item.content || item.text || item.fact || item.name || "";
+      }).filter(Boolean).join("\n");
+    }
+    function howItRan(graph) {
+      const g = graph && typeof graph === "object" ? graph : {};
+      const n = g.workers;
+      const handoff = g.peer_handoff;
+      if (!n && !g.pattern) return "";
+      let line = n ? "分成 " + n + " 路一起答" : "按意图回答";
+      if (handoff) line += "，中间互相补了一句";
+      const reviews = (g.reviews || []).map((r, i) => {
+        const name = r.intent || r.major || ("第" + (i + 1) + "路");
+        return name + (r.pass ? "：过了" : "：没过");
+      }).filter(Boolean);
+      if (reviews.length) line += "\n" + reviews.join("\n");
+      return line;
+    }
+    function hitlLine(hitl) {
+      const row = hitl && typeof hitl === "object" ? hitl : null;
+      if (!row || !(row.pending || row.hitl_kind || row.question)) return "没有停下来等你";
+      const ask = row.question || "";
+      if (row.hitl_kind === "tool_approval") return ask ? "等你确认工具：" + ask : "等你确认要不要调用工具";
+      if (row.hitl_kind === "slot_fill") return ask ? "等你补一句：" + ask : "等你补充信息";
+      return ask || "停下来等你操作";
+    }
+    let lastPrep = null;
+    function handlerLine(detail) {
+      const intents = (detail && detail.intents) || [];
+      const rows = intents.map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const name = item.intent || item.major || "这一路";
+        return name + "：" + (item.handler || "兜底");
+      }).filter(Boolean);
+      if (rows.length) return rows.join("\n");
+      return detail && detail.handler ? detail.handler : "";
+    }
+    function splitLine(detail, graph) {
+      const g = graph && typeof graph === "object" ? graph : {};
+      const planned = ((detail && detail.intents) || []).length;
+      const n = g.workers || planned;
+      if (!n) return "还没拆路";
+      let line = "拆成 " + n + " 路";
+      if (g.peer_handoff) line += "，中间互相补了一句";
+      const reviews = (g.reviews || []).map((r, i) => {
+        const name = r.intent || r.major || ("第" + (i + 1) + "路");
+        return name + (r.pass ? "：过了" : "：没过");
+      }).filter(Boolean);
+      if (reviews.length) line += "\n" + reviews.join("\n");
+      return line;
+    }
+    function kgLine(p) {
+      const errors = p.stage_errors && typeof p.stage_errors === "object" ? p.stage_errors : {};
+      const errText = Object.keys(errors).map((k) => errors[k]).filter(Boolean).join("；");
+      if (errText) return "没查成：" + errText;
+      if (p.entity_extracted === false) return "这轮没查知识库";
+      const n = (p.alignments || []).length;
+      if (!n) return "查了，没对上标准名";
+      return "查了，对上 " + n + " 条";
+    }
+    let lastGraph = null;
+    function taskLines(tasks, detail) {
+      const rows = (tasks && tasks.length) ? tasks : ((detail && detail.intents) || []);
+      return rows.map((item, i) => {
+        if (!item || typeof item !== "object") return "";
+        const bits = [item.major, item.intent, item.handler].filter(Boolean);
+        return (i + 1) + ". " + (bits.join(" / ") || "空任务");
+      }).filter(Boolean).join("\n");
+    }
+    function paintPrep(pre, hitl, graph, tasks) {
+      if (pre) lastPrep = pre;
+      if (graph) lastGraph = graph;
+      const p = pre && typeof pre === "object" ? pre : {};
+      const said = p.raw_text || "";
+      const corrected = p.corrected_text || said;
+      const resolved = p.resolved_text || corrected;
+      const spell = p.spell && typeof p.spell === "object" ? p.spell : {};
+      const coref = p.coref && typeof p.coref === "object" ? p.coref : {};
+      const detail = p.intent_detail && typeof p.intent_detail === "object" ? p.intent_detail : {};
+      const intents = (detail.intents || []).map((item) => {
+        if (!item || typeof item !== "object") return "";
+        return [item.intent, item.major].filter(Boolean).join(" · ");
+      }).filter(Boolean);
+      const intentLine = intents.length
+        ? intents.join("\n")
+        : [p.intent, p.intent_major].filter(Boolean).join(" · ");
+      const spellLine = spell.changed || (corrected && corrected !== said)
+        ? corrected
+        : "没改";
+      const corefLine = coref.changed || (resolved && resolved !== corrected)
+        ? resolved
+        : "没补";
+      fillDbg($("dumpPrep"), [
+        ["原话", said || "还没有"],
+        ["纠错", spellLine],
+        ["补全", corefLine],
+        ["标题", "意图环节"],
+        ["意图", intentLine || "还没判"],
+        ["tasks", taskLines(tasks, detail) || "还没有任务"],
+        ["否定", joinBits(p.negated) || "没有"],
+        ["抽出", mentionLines(p.mentions) || "没有"],
+        ["对齐", alignLines(p.alignments) || "没有"],
+        ["处理", handlerLine(detail) || "兜底"],
+        ["拆路", splitLine(detail, graph || lastGraph)],
+        ["知识库", kgLine(p)],
+        ["HITL", hitlLine(hitl)],
+      ]);
+    }
+    function checkpointDbgRows(ckpt) {
+      const block = ckpt && typeof ckpt === "object" ? ckpt : null;
+      if (!block) return [];
+      const rows = [["标题", "checkpoint"]];
+      const comp = block.companion_checkpointer || {};
+      const hitl = block.hitl_checkpointer || {};
+      rows.push(["节", "get_companion_checkpointer()"]);
+      rows.push(["实例", JSON.stringify(comp.checkpointer || {}, null, 2)]);
+      rows.push(["主图 thread", String(comp.thread_id || "")]);
+      rows.push(["retention", String(comp.retention || "")]);
+      rows.push(["graph_state", JSON.stringify(comp.graph_state || {}, null, 2)]);
+      const versions = comp.checkpoint_versions || [];
+      rows.push(["节", "主图 checkpoint 版本序列"]);
+      if (!versions.length) {
+        rows.push(["段", String(comp.versions_note || comp.read_after_release ? "释放后读取，版本已清空" : "（无版本）")]);
+      }
+      versions.forEach((v) => {
+        if (!v || typeof v !== "object") return;
+        const head = "#" + (v.seq || "?") + " · " + (v.node_hint || "节点") +
+          " · step=" + (v.step != null ? v.step : "?") +
+          " · source=" + (v.source || "?");
+        rows.push(["序号", head]);
+        rows.push(["段", JSON.stringify(v, null, 2)]);
+      });
+      rows.push(["节", "get_hitl_checkpointer()"]);
+      rows.push(["实例", JSON.stringify(hitl.checkpointer || {}, null, 2)]);
+      rows.push(["HITL 状态", String(hitl.hitl_status || "没有 HITL 触发")]);
+      if (hitl.pending) {
+        rows.push(["待办", JSON.stringify(hitl.pending, null, 2)]);
+      }
+      rows.push(["slot 图", JSON.stringify(hitl.slot_graph_state || {}, null, 2)]);
+      rows.push(["meta 图", JSON.stringify(hitl.meta_graph_state || {}, null, 2)]);
+      const slotVers = hitl.slot_checkpoint_versions || [];
+      const metaVers = hitl.meta_checkpoint_versions || [];
+      if (slotVers.length) {
+        rows.push(["节", "HITL slot checkpoint 版本序列"]);
+        slotVers.forEach((v) => {
+          rows.push(["序号", "#" + (v.seq || "?") + " · " + (v.node_hint || "")]);
+          rows.push(["段", JSON.stringify(v, null, 2)]);
+        });
+      }
+      if (metaVers.length) {
+        rows.push(["节", "HITL meta checkpoint 版本序列"]);
+        metaVers.forEach((v) => {
+          rows.push(["序号", "#" + (v.seq || "?") + " · " + (v.node_hint || "")]);
+          rows.push(["段", JSON.stringify(v, null, 2)]);
+        });
+      }
+      if (block.note) rows.push(["说明", String(block.note)]);
+      return rows;
+    }
+    function paintRound(data, round) {
+      const r = round && typeof round === "object" ? round : {};
+      const localTools = joinBits(r.bound_local_tools || data.bound_local_tools);
+      const mcpTools = joinBits(r.bound_mcp_tools || data.bound_mcp_tools);
+      const allTools = joinBits(r.bound_tools || data.bound_tools);
+      const toolLine = localTools || mcpTools
+        ? ["本地", localTools || "无"].join("：") + "\n" + ["MCP", mcpTools || "无"].join("：")
+        : allTools;
+      fillDbg($("dumpRound"), [
+        ["你说", r.user_text || ""],
+        ["工具", toolLine],
+        ["走法", howItRan(r.langgraph || data.langgraph)],
+        ["回复", (data.reply || r.reply || "").slice(0, 280)],
+      ].concat(checkpointDbgRows(r.checkpoint_debug || data.checkpoint_debug || round.checkpoint_debug)));
+    }
+    function paintRag(blocks) {
+      const rows = [];
+      (blocks || []).forEach((item) => {
+        if (!item) return;
+        rows.push(["标题", item.tool || "RAG"]);
+        rows.push(["段", item.body || ""]);
+      });
+      if (!rows.length) {
+        fillDbg($("dumpRag"), [["段", "本轮没有 RAGFlow / Chroma / 图谱增强检索。"]]);
+        return;
+      }
+      fillDbg($("dumpRag"), rows);
+    }
+    function paintLlm(calls) {
+      const rows = [];
+      (calls || []).forEach((item) => {
+        if (!item || typeof item !== "object") return;
+        rows.push(["标题", item.step || "这一步"]);
+        if (Array.isArray(item.sections)) {
+          item.sections.forEach((sec) => {
+            if (!sec) return;
+            rows.push(["节", sec.title || ""]);
+            rows.push(["段", sec.body || ""]);
+          });
+        } else if (item.gave) {
+          rows.push(["节", "交给模型"]);
+          rows.push(["段", item.gave]);
+        }
+        if (item.got) {
+          rows.push(["节", "得到"]);
+          rows.push(["段", item.got]);
+        }
+      });
+      fillDbg($("dumpFacts"), rows);
+    }
+    function paintTrace(obs) {
+      const o = obs && typeof obs === "object" ? obs : {};
+      const rows = [];
+      if (!o.trace_id && !(o.tool_runs && o.tool_runs.length)) {
+        fillDbg($("dumpTrace"), []);
+        return;
+      }
+      rows.push(["trace_id", o.trace_id || "—"]);
+      if (o.thread_id) rows.push(["graph thread", o.thread_id]);
+      if (o.pattern) rows.push(["pattern", String(o.pattern) + (o.workers != null ? " · workers=" + o.workers : "")]);
+      if (o.peer_handoff) rows.push(["peer_handoff", "是"]);
+      (o.reviews || []).forEach((r, i) => {
+        const name = (r && (r.intent || r.major)) || ("路" + (i + 1));
+        rows.push(["评审", name + (r && r.pass ? " · 过" : " · 未过")]);
+      });
+      (o.tool_runs || []).forEach((run) => {
+        if (!run) return;
+        const route = [run.major, run.intent].filter(Boolean).join(" / ") || run.handler || "worker";
+        rows.push(["节", route]);
+        if (run.bound_tools && run.bound_tools.length) {
+          rows.push(["绑定工具", run.bound_tools.join("、")]);
+        }
+        (run.middleware_trace || []).forEach((mw) => {
+          if (!mw) return;
+          rows.push(["中间件", (mw.name || "?") + (mw.route ? " @ " + mw.route : "") + (mw.detail ? "\n" + mw.detail : "")]);
+        });
+        (run.steps || []).forEach((st, idx) => {
+          if (!st) return;
+          let tag = st.source === "mcp" ? "MCP" : "local";
+          if (st.mcp_server) tag += "/" + st.mcp_server;
+          rows.push(["工具 " + (idx + 1), (st.name || "?") + " · " + tag + " · ok=" + (st.ok != null ? st.ok : "?")]);
+          if (st.args) rows.push(["入参", st.args]);
+          if (st.summary) rows.push(["摘要", st.summary]);
+          const env = st.envelope;
+          if (env && typeof env === "object") {
+            if (env.error) rows.push(["error", env.error]);
+            if (env.data && Object.keys(env.data).length) {
+              rows.push(["envelope.data", JSON.stringify(env.data, null, 2)]);
+            }
+          }
+        });
+        if (!(run.steps || []).length) rows.push(["工具", "（本轮未调用）"]);
+      });
+      rows.push(["节", "原始 JSON"]);
+      rows.push(["段", JSON.stringify(o, null, 2)]);
+      fillDbg($("dumpTrace"), rows);
+    }
+    function paintSlots(session) {
+      const slots = (session && session.slot_memory) || {};
+      fillDbg($("dumpSession"), [
+        ["部位", joinBits(slots["部位"])],
+        ["症状", joinBits(slots["症状"])],
+        ["疾病", joinBits(slots["疾病"])],
+        ["检查", joinBits(slots["检查"])],
+        ["指标", joinBits(slots["指标"])],
+      ]);
     }
     function formatReportSummary(report) {
       if (!report || !report.filename) return "";
@@ -200,9 +638,155 @@
       return el;
     }
 
+    function roleFromSessionRow(item) {
+      const rt = String(item.role_type || item.role || "");
+      if (rt === "user") return "user";
+      if (rt === "assistant") return "ai";
+      return "sys";
+    }
+
+    function renderMessagesFromSession(session) {
+      $("messages").innerHTML = "";
+      const rows = list(session && session.user) ? session.user : [];
+      if (!rows.length) {
+        addMsg("sys", "填写 user_id 后新建会话，再开始说话。");
+        return;
+      }
+      for (const item of rows) {
+        addMsg(roleFromSessionRow(item), String(item.content || ""));
+      }
+    }
+
+    function list(v) {
+      return Array.isArray(v) ? v : [];
+    }
+
+    function saveReleasedDraftFromSession(sessionPayload) {
+      const uid = ($("userId").value || "").trim() || (window.B2cPersist && B2cPersist.getUserId()) || "";
+      if (!uid || !window.B2cPersist || !sessionPayload) return;
+      B2cPersist.saveReleasedChatDraft(uid, sessionPayload);
+    }
+
+    async function startSession(opts) {
+      const forceNew = !!(opts && opts.forceNew);
+      const user_id = ($("userId").value || "").trim();
+      if (!user_id) {
+        alert("请先填写 user_id（Neo4j UserInfo.id）。");
+        $("userId").focus();
+        return;
+      }
+      if (forceNew) {
+        await persistSession({ silent: true });
+      }
+      const res = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user_id, force_new: forceNew }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || "会话失败");
+        return;
+      }
+      const canon = String(data.group_id || data.user_id || user_id || "").trim();
+      if (canon) {
+        $("userId").value = canon;
+        if (window.B2cPersist) B2cPersist.setUserId(canon);
+      }
+      showSessionMeta(data);
+      renderMessagesFromSession(data);
+      if (data.resumed) {
+        addMsg("sys", "已恢复 session_id=" + (data.session_id || sessionId));
+      } else if (data.restored_from_draft) {
+        addMsg("sys", "已从 user_id 草稿恢复聊天记录（服务端进程重启后）。");
+      } else if (!list(data.user).length) {
+        addMsg("sys", "会话已建立。下面是进场根据长期记忆的推送。");
+        const push = data.push || {};
+        addMsg("ai", push.text || "（无推送）");
+        paintLlm([]);
+        paintRag([]);
+      }
+      resumeToken = "";
+    }
+
+    async function sendToolHitl(decisionType, message) {
+      if (!sessionId) return;
+      const body = {
+        text: message || "",
+        resume_token: resumeToken || "",
+        hitl_decision: { type: decisionType, message: message || "" },
+        think: !!(document.getElementById("chkThink") && document.getElementById("chkThink").checked),
+      };
+      $("btnSend").disabled = true;
+      const res = await fetch("/api/sessions/" + encodeURIComponent(userKey()) + "/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(body),
+      });
+      $("btnSend").disabled = false;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        addMsg("sys", "错误: " + (err.detail || "请求失败"));
+        return;
+      }
+      addMsg("user", message || ("（" + decisionType + "）"));
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let assistantEl = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const block of parts) {
+          const line = block.trim();
+          if (!line.startsWith("data: ")) continue;
+          let data;
+          try { data = JSON.parse(line.slice(6)); } catch { continue; }
+          if (data.event === "debug") {
+            appendLiveDebug(data);
+          } else if (data.event === "suspended") {
+            resumeToken = data.resume_token || resumeToken;
+            attachToolHitl(assistantEl, data);
+          } else if (data.event === "token") {
+            if (!assistantEl) assistantEl = addMsg("ai", "");
+            const bodyEl = assistantEl.querySelector(".msg-text") || assistantEl;
+            bodyEl.textContent += data.content || "";
+          } else if (data.event === "state") {
+            showRound(data.data || {});
+          }
+        }
+      }
+    }
+
+    function attachToolHitl(el, data) {
+      if (!el || !data || data.hitl_kind !== "tool_approval") return;
+      const old = el.querySelector(".msg-hitl-tools");
+      if (old) old.remove();
+      const bar = document.createElement("div");
+      bar.className = "msg-actions msg-hitl-tools";
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.textContent = "批准执行";
+      approve.onclick = () => sendToolHitl("approve", "确认");
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.textContent = "拒绝";
+      reject.onclick = () => {
+        const msg = prompt("拒绝原因（可选）", "暂不执行");
+        if (msg === null) return;
+        sendToolHitl("reject", msg);
+      };
+      bar.appendChild(approve);
+      bar.appendChild(reject);
+      el.appendChild(bar);
+    }
+
     function attachActions(el, actions) {
       if (!el) return;
-      const old = el.querySelector(".msg-actions");
+      const old = el.querySelector(".msg-actions:not(.msg-hitl-tools)");
       if (old) old.remove();
       if (!actions || !actions.length) return;
       const bar = document.createElement("div");
@@ -230,7 +814,7 @@
       sessionId = data.session_id || sessionId;
       $("chipSession").textContent = sessionId || "未创建";
       $("chipUser").textContent = data.group_id || data.user_id || "-";
-      $("dumpSession").textContent = pretty(data);
+      paintSlots(data);
     }
 
     function userKey() {
@@ -254,11 +838,13 @@
           if (!silent) $("debugHint").textContent = "会话已不在服务端（可能刚重启）";
           return data;
         }
+        if (data.session) saveReleasedDraftFromSession(data.session);
+        sessionId = "";
+        $("chipSession").textContent = "已结束";
         if (!silent) {
-          $("dumpIngest").textContent = pretty(data.ingest || data);
+          paintTrace({});
           $("debugHint").textContent = "会话结束入库";
-          if (data.session) showSessionMeta(data.session);
-          addMsg("sys", "本场已抽离入库。");
+          addMsg("sys", "本场已抽离入库，草稿已写入本机。");
         }
         return data;
       } catch (err) {
@@ -267,14 +853,6 @@
       } finally {
         closing = false;
       }
-    }
-
-    function persistOnLeave() {
-      const url = persistUrl();
-      if (!url) return;
-      const blob = new Blob([], { type: "application/json" });
-      if (navigator.sendBeacon) navigator.sendBeacon(url, blob);
-      else fetch(url, { method: "POST", keepalive: true });
     }
 
     function showRound(data) {
@@ -286,11 +864,12 @@
         ingest: data.ingest,
         session: data.session,
       };
-      $("debugHint").textContent = "最近一次 /chat";
-      $("dumpRound").textContent = pretty(round);
-      $("dumpPrep").textContent = pretty(data.preprocess || round.preprocess);
-      $("dumpFacts").textContent = pretty(data.facts);
-      $("dumpIngest").textContent = pretty(data.ingest);
+      $("debugHint").textContent = "刚回完这一句";
+      paintRound(data, round);
+      paintPrep(data.preprocess || round.preprocess, data.hitl || round.hitl, round.langgraph || data.langgraph, round.intent_tasks || data.intent_tasks);
+      paintLlm((data.round && data.round.llm_calls) || data.llm_calls || []);
+      paintRag((data.round && data.round.rag_enhance) || data.rag_enhance || []);
+      paintTrace(data.observability || (round && round.observability) || (round.langgraph || data.langgraph));
       if (data.session) showSessionMeta(data.session);
       const hitl = data.hitl || round.hitl;
       if (hitl && hitl.resume_token) resumeToken = hitl.resume_token;
@@ -302,39 +881,13 @@
       await persistSession({ silent: false });
     };
 
-      $("btnNew").onclick = async () => {
-      const user_id = $("userId").value.trim();
-      if (!user_id) {
-        alert("请先填写 user_id（Neo4j UserInfo.id）。");
-        $("userId").focus();
-        return;
-      }
-      await persistSession({ silent: true });
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id }),
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.detail || "新建失败"); return; }
-      const canon = String(data.group_id || data.user_id || user_id || "").trim();
-      if (canon) {
-        $("userId").value = canon;
-        try { localStorage.setItem("b2c-user-id", canon); } catch (e) {}
-      }
-      $("messages").innerHTML = "";
-      addMsg("sys", "会话已建立。下面是进场根据长期记忆的推送。");
-      const push = data.push || {};
-      addMsg("ai", push.text || "（无推送）");
-      showSessionMeta(data);
-      $("dumpRound").textContent = pretty({ event: "create_session", session_id: data.session_id, group_id: data.group_id, push: push });
-      $("dumpFacts").textContent = pretty(push.facts || []);
-      $("dumpIngest").textContent = pretty({ deferred: true, reason: "persist_on_session_end" });
-      $("debugHint").textContent = "进场推送（长期记忆）";
-      resumeToken = "";
-    };
+    $("btnNew").onclick = () => startSession({ forceNew: true });
 
-    window.addEventListener("pagehide", persistOnLeave);
+    $("linkSwitchUser").addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      if (sessionId) await persistSession({ silent: true });
+      location.href = "/";
+    });
 
     async function send(preset, opts) {
       const speak = Boolean(opts && opts.speak);
@@ -345,6 +898,7 @@
       if (!text) return "";
       if (!presetText) $("text").value = "";
       addMsg("user", text);
+      resetLiveDebug();
       $("btnSend").disabled = true;
       $("debugHint").textContent = "SSE 流式回复中";
 
@@ -384,10 +938,21 @@
             }
             if (data.event === "thinking") {
               $("debugHint").textContent = data.message || "正在回复…";
+            } else if (data.event === "debug") {
+              appendLiveDebug(data);
+              if (data.kind === "trace" && (data.section || "").indexOf("tool_call") >= 0) {
+                $("debugHint").textContent = (data.title || "trace") + " …";
+              }
             } else if (data.event === "suspended") {
               resumeToken = data.resume_token || resumeToken;
+              paintPrep(lastPrep, data, lastGraph, null);
               $("debugHint").textContent = "等待补充：" + (data.question || "");
-              attachActions(assistantEl, data.actions);
+              if (data.hitl_kind === "tool_approval") {
+                if (!assistantEl) assistantEl = addMsg("ai", data.question || "");
+                attachToolHitl(assistantEl, data);
+              } else {
+                attachActions(assistantEl, data.actions);
+              }
             } else if (data.event === "token") {
               if (!assistantEl) {
                 assistantEl = addMsg("ai", "");
@@ -545,7 +1110,7 @@
         }
         addMsg("ai", [data.reply || "（无解读）", formatReportSummary(data.report)].filter(Boolean).join("\n\n"), data.actions);
         showRound(data);
-        $("dumpPrep").textContent = pretty({ report: data.report, preprocess: data.preprocess });
+        paintPrep(data.preprocess || {}, data.hitl);
         $("debugHint").textContent = "报告解读 " + ((data.report && data.report.parse_source) || "");
       } catch (err) {
         addMsg("sys", "上传失败");
@@ -555,15 +1120,18 @@
       }
     }
 
-    (function bootFromQuery() {
+    (async function bootFromQuery() {
+      if (window.B2cPersist) {
+        B2cPersist.mountUserBar(".b2c-user-bar");
+        await B2cPersist.fetchServerDraft();
+      }
       const params = new URLSearchParams(location.search);
       let uid = (params.get("user_id") || "").trim();
-      if (!uid) {
-        try { uid = (localStorage.getItem("b2c-user-id") || "").trim(); } catch (e) { uid = ""; }
-      }
+      if (!uid && window.B2cPersist) uid = B2cPersist.getUserId();
       if (!uid) return;
       $("userId").value = uid;
-      $("btnNew").click();
+      if (window.B2cPersist) B2cPersist.setUserId(uid);
+      await startSession({ forceNew: false });
     })();
   </script>
 </body>

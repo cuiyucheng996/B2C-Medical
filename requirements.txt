@@ -8,6 +8,8 @@ pydantic>=2.0
 rouge_score
 langchain
 langchain-openai
+langgraph-supervisor>=0.0.31
+langgraph-checkpoint-sqlite>=2.0.0
 python-dotenv
 fastapi
 uvicorn[standard]

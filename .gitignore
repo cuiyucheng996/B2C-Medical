@@ -30,8 +30,14 @@ data/exam_kb/
 data/eval_ingest/
 data/spell_check/processed/
 
-# 第三方 / Docker 运行时
+# 第三方克隆与 Docker 运行时（体积大，不进本仓库）
+External/agent-eval/
+External/agent-orchestration/
+External/automation-rpa/
+External/rag-knowledge/
 External/ragflow/
+data/ui_drafts/
+scripts/_tmp_*
 
 # 预训练与训练权重（勿提交 GitHub）
 pretrained/**/*.bin

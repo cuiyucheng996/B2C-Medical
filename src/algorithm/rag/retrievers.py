@@ -7,7 +7,7 @@ from typing import Any
 from algorithm.rag.types import RagHit
 from algorithm.ragflow_kb import retrieve_hits
 
-__all__ = ["retrieve_handbook_hits", "retrieve_milvus_hits", "hits_from_text_items"]
+__all__ = ["retrieve_handbook_hits", "retrieve_chroma_hits", "hits_from_text_items"]
 
 
 def hits_from_text_items(items: list[str], *, channel: str, source_score: float = 0.0) -> list[RagHit]:
@@ -47,8 +47,8 @@ def retrieve_handbook_hits(query: str, *, top_k: int) -> list[RagHit]:
     return out
 
 
-def retrieve_milvus_hits(query: str) -> list[RagHit]:
-    from algorithm.kg_query import _milvus_snips
+def retrieve_chroma_hits(query: str) -> list[RagHit]:
+    from algorithm.kg_query import _chroma_snips
 
-    lines = _milvus_snips(query)
-    return hits_from_text_items(lines, channel="milvus")
+    lines = _chroma_snips(query)
+    return hits_from_text_items(lines, channel="chroma")

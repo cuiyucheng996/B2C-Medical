@@ -3,17 +3,79 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from configs.paths_b2c import ensure_uvgraph_root
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["list_align_catalogs", "query_companion_graph"]
+__all__ = [
+    "align_catalog_cache_status",
+    "invalidate_align_catalog_cache",
+    "list_align_catalogs",
+    "query_companion_graph",
+    "warm_align_catalogs",
+]
+
+# 与 Neo4j 目录一致；TTL 内复用快照，对齐逻辑不变
+_ALIGN_CATALOG_TTL_SEC = 600
+_catalog_cache: dict[str, list[dict[str, Any]]] | None = None
+_catalog_cached_at: float = 0.0
+
+
+def invalidate_align_catalog_cache() -> None:
+    global _catalog_cache, _catalog_cached_at
+    _catalog_cache = None
+    _catalog_cached_at = 0.0
+
+
+def warm_align_catalogs() -> int:
+    """启动时拉一次目录进缓存。返回耗时 ms。"""
+    t0 = time.perf_counter()
+    list_align_catalogs()
+    return int((time.perf_counter() - t0) * 1000)
+
+
+def align_catalog_cache_status() -> dict[str, Any]:
+    """评测台：目录缓存是否命中、TTL 与条目数。"""
+    now = time.monotonic()
+    if _catalog_cache is None:
+        return {
+            "ready": False,
+            "cached": False,
+            "ttl_sec": _ALIGN_CATALOG_TTL_SEC,
+            "age_sec": None,
+            "counts": {"body_part": 0, "disease": 0, "symptom": 0},
+        }
+    age = max(0.0, now - _catalog_cached_at)
+    counts = {
+        "body_part": len(_catalog_cache.get("body_part") or []),
+        "disease": len(_catalog_cache.get("disease") or []),
+        "symptom": len(_catalog_cache.get("symptom") or []),
+    }
+    return {
+        "ready": age < _ALIGN_CATALOG_TTL_SEC and any(counts.values()),
+        "cached": True,
+        "ttl_sec": _ALIGN_CATALOG_TTL_SEC,
+        "age_sec": int(age),
+        "counts": counts,
+    }
 
 
 def list_align_catalogs() -> dict[str, list[dict[str, Any]]]:
     """给对齐用的入口节点表：部位 / 疾病 / 主症。失败则空表，对齐仍可走 span。"""
+    global _catalog_cache, _catalog_cached_at
+    now = time.monotonic()
+    if _catalog_cache is not None and (now - _catalog_cached_at) < _ALIGN_CATALOG_TTL_SEC:
+        return _catalog_cache
+    loaded = _load_align_catalogs_from_neo4j()
+    _catalog_cache = loaded
+    _catalog_cached_at = now
+    return loaded
+
+
+def _load_align_catalogs_from_neo4j() -> dict[str, list[dict[str, Any]]]:
     ensure_uvgraph_root()
     empty: dict[str, list[dict[str, Any]]] = {"body_part": [], "disease": [], "symptom": []}
     try:

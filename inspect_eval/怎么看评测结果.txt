@@ -1,0 +1,19 @@
+你现在这个页面 = companion_smoke（你好/谢谢），长句不在这页，换不了 Tab 也看不到。
+
+【在当前浏览器里换到长句 eval】
+1. 看页面最上方路径，类似：
+   ... inspect_eval  >  logs  >  2026-09-25T08-07-56 ... companion-smoke ...
+2. 用鼠标点中间可点的  logs  （不是点整段路径，就点 logs 那一段）
+3. 出现 eval 列表后，点这一行（不要点 smoke）：
+   2026-09-25T09-46-14 ... companion-multi-intent-case ...
+4. 标题应变成 companion_multi_intent_case，Samples 里只有 1 条（乏力口干…），点 Sample 1。
+
+【省事做法：只打开长句那一条】
+1. 关掉正在跑 inspect view 的黑色 PowerShell 窗口
+2. 新开终端执行：
+   powershell -File "B2C business/inspect_eval/run_inspect_view.ps1"
+3. 浏览器刷新 http://127.0.0.1:7575 ，列表里应只剩 1 个 eval，直接点进去就是长句。
+
+【不用网页】
+chcp 65001
+D:\program\uvgraph\uvgraph\.venv\Scripts\python.exe "B2C business/inspect_eval/show_last_eval.py"

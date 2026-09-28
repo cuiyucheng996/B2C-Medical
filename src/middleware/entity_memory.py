@@ -40,6 +40,13 @@ class CompanionEntityMemoryMiddleware(AgentMiddleware):
         )
         if not note.strip():
             return None
+        from middleware.middleware_trace import append_middleware_trace
+
+        append_middleware_trace(
+            "CompanionEntityMemoryMiddleware",
+            f"注入实体/图谱记忆（{len(note)} 字）",
+            runtime=runtime,
+        )
         return {"messages": [*messages, HumanMessage(content=note)]}
 
     async def abefore_model(self, state: AgentState[Any], runtime: Any) -> dict[str, Any] | None:

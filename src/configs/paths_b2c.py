@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -10,10 +11,6 @@ from pathlib import Path
 B2C_ROOT = Path(__file__).resolve().parents[2]
 B2C_SRC = B2C_ROOT / "src"
 UVGRAPH_ROOT = B2C_ROOT.parent
-B2B_SRC = UVGRAPH_ROOT / "B2B business" / "src"
-
-_B2B_TOP = ("algorithm", "knowledge", "schema", "configs")
-_b2b_loaded: dict[str, object] = {}
 
 
 def ensure_uvgraph_root() -> Path:
@@ -33,37 +30,33 @@ def ensure_b2c_src() -> Path:
     return B2C_SRC
 
 
-def _is_b2b_top(name: str) -> bool:
-    return name in _B2B_TOP or any(name.startswith(f"{item}.") for item in _B2B_TOP)
+def _algorithm_is_b2c() -> bool:
+    pkg = sys.modules.get("algorithm")
+    if pkg is None:
+        return False
+    path = str(getattr(pkg, "__file__", "") or "").replace("\\", "/")
+    return "/B2C business/" in path or path.endswith("/B2C business/src/algorithm/__init__.py")
+
+
+def _clear_algorithm_modules() -> None:
+    for key in list(sys.modules):
+        if key == "algorithm" or key.startswith("algorithm."):
+            sys.modules.pop(key, None)
+
+
+def import_b2c_algorithm(name: str):
+    """C 端 algorithm 子模块。"""
+    ensure_uvgraph_root()
+    if not _algorithm_is_b2c():
+        _clear_algorithm_modules()
+    return importlib.import_module(f"algorithm.{name}")
 
 
 @contextmanager
 def b2b_src_imports() -> Iterator[None]:
-    """临时切到 B2B src，复用意图/UIE/否定/对齐。
-
-    C 端自己也有 ``algorithm`` / ``schema`` / ``configs``，必须换栈再 import。
-    已加载的 B2B 模块（UIE、意图 BERT）缓存在 ``_b2b_loaded``，避免每轮对话重装模型。
-    不把四轮问诊图搬进 C 端。
-    """
-    saved: dict[str, object] = {}
-    for key in list(sys.modules):
-        if _is_b2b_top(key):
-            saved[key] = sys.modules.pop(key)
-    sys.modules.update(_b2b_loaded)
-    b2b = str(B2B_SRC)
-    if b2b in sys.path:
-        sys.path.remove(b2b)
-    sys.path.insert(0, b2b)
-    try:
-        yield
-        for key in list(sys.modules):
-            if _is_b2b_top(key):
-                _b2b_loaded[key] = sys.modules[key]
-    finally:
-        for key in list(sys.modules):
-            if _is_b2b_top(key):
-                sys.modules.pop(key, None)
-        if b2b in sys.path:
-            sys.path.remove(b2b)
-        sys.modules.update(saved)
-        ensure_uvgraph_root()
+    """已废弃：C 端业务请只用 ``b2c_b2b_bridge``，勿再切 sys.path 占包名。"""
+    raise RuntimeError(
+        "b2b_src_imports 已废弃。C 端请通过 b2c_b2b_bridge.b2b_*() 调用 B2B 能力，"
+        "避免与 C 端 algorithm/schema 包名冲突。"
+    )
+    yield  # pragma: no cover

@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from algorithm.intent_catalog import INTENT_BY_NAME, INTENT_ROWS, intent_prompt_lines, major_of
-from algorithm.intent_rule import match_intent
-from configs.paths_b2c import B2C_ROOT, b2b_src_imports, ensure_uvgraph_root
+from algorithm.intent_rule import match_all_intents, match_intent
+from configs.paths_b2c import B2C_ROOT, ensure_uvgraph_root
 from prompt import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -20,13 +20,22 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CompanionIntentResult",
     "classify_companion_intent",
+    "classify_companion_intents",
+    "classify_companion_intents_bert",
     "classify_companion_intent_llm",
+    "resolve_companion_intent_items",
     "classify_fine_for_major",
     "classify_intent_fallback",
+    "classify_intent_fallback_multi",
     "intent_result_to_dict",
+    "intent_score_threshold",
+    "major_score_threshold",
+    "major_scores_to_rows",
+    "major_bert_available",
     "normalize_intent_results",
+    "sort_major_scores",
 ]
-_MAX_INTENTS = 3
+_MAX_INTENTS_DEFAULT = 5
 
 _MAJORS = (
     "公共知识问答",
@@ -52,10 +61,19 @@ class CompanionIntentResult:
     slots: tuple[str, ...]
     handler: str
     recommend_action: str = "正常处理"
+    # 全大类打分：8 个大类各一个 0~1 分，供测试台与阈值判定共用
+    major_scores: dict[str, float] = field(default_factory=dict)
 
 
 def _major_model_dir() -> Path:
     return B2C_ROOT / "checkpoint" / "intent_major" / "best_model"
+
+
+def major_bert_available() -> bool:
+    """训练后大意图 BERT 权重是否就绪（不加载模型）。"""
+    model_dir = _major_model_dir()
+    mapping_path = model_dir.parent / "label_mapping.json"
+    return model_dir.is_dir() and mapping_path.is_file()
 
 
 @lru_cache(maxsize=1)
@@ -77,6 +95,42 @@ def _major_bert_bundle() -> tuple[Any, Any, dict[str, str]] | None:
     return model, tokenizer, mapping
 
 
+def _empty_major_scores() -> dict[str, float]:
+    """全大类打分骨架：每个大类先记 0 分。"""
+    return {name: 0.0 for name in _MAJORS}
+
+
+def _clamp_major_scores(raw: Any) -> dict[str, float]:
+    """把模型/BERT 给的分数补齐成全部大类，缺的与大类外的都记 0。"""
+    scores = _empty_major_scores()
+    if not isinstance(raw, dict):
+        return scores
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        if name not in scores:
+            continue
+        try:
+            scores[name] = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return scores
+
+
+def sort_major_scores(scores: dict[str, float] | None) -> list[tuple[str, float]]:
+    """全大类打分按分数降序，供阈值判定与测试台展示共用。"""
+    if not scores:
+        return []
+    return sorted(scores.items(), key=lambda row: (-float(row[1]), row[0]))
+
+
+def major_scores_to_rows(scores: dict[str, float] | None) -> list[dict[str, Any]]:
+    """全大类打分 → 展示行（降序），前端与接口统一用这个形状。"""
+    return [
+        {"major": name, "confidence": round(float(value), 4)}
+        for name, value in sort_major_scores(scores)
+    ]
+
+
 def _pack(
     *,
     major: str,
@@ -84,7 +138,9 @@ def _pack(
     confidence: float,
     source: str,
     reason: str,
+    major_scores: dict[str, float] | None = None,
 ) -> CompanionIntentResult:
+    scores = _clamp_major_scores(major_scores) if major_scores else {}
     if major not in _MAJORS or major == "other" or intent in ("未知意图", "other", ""):
         return CompanionIntentResult(
             intent="未知意图",
@@ -95,6 +151,7 @@ def _pack(
             slots=(),
             handler="fallback",
             recommend_action="转人工或兜底",
+            major_scores=scores,
         )
     row = INTENT_BY_NAME.get(intent) or {}
     handler = str(row.get("handler") or "fallback")
@@ -109,6 +166,7 @@ def _pack(
         slots=tuple(row.get("slots") or ()),
         handler=handler,
         recommend_action="正常处理",
+        major_scores=scores,
     )
 
 
@@ -125,8 +183,63 @@ def intent_result_to_dict(item: CompanionIntentResult) -> dict[str, Any]:
     }
 
 
-def normalize_intent_results(items: list[CompanionIntentResult]) -> list[CompanionIntentResult]:
-    """去重、去掉被实义意图挤掉的闲聊/other，最多 3 条。"""
+def intent_score_threshold() -> float:
+    _, thresh = _intent_multi_settings()
+    return thresh
+
+
+def major_score_threshold() -> float:
+    """全大类打分进候选的阈值；未单独配置时沿用多意图阈值。"""
+    _, thresh = _intent_multi_settings()
+    try:
+        ensure_uvgraph_root()
+        from src.configs import get_yaml_config
+
+        block = ((get_yaml_config() or {}).get("b2b_api") or {}).get("intent_classify") or {}
+        if block.get("major_score_threshold") is not None:
+            return max(0.0, min(1.0, float(block["major_score_threshold"])))
+    except Exception:
+        logger.debug("major score threshold fallback", exc_info=True)
+    return thresh
+
+
+def _majors_above_threshold(scores: dict[str, float] | None) -> list[tuple[str, float]]:
+    """全大类打分里达到阈值的大类（降序），闲聊/other 不进候选。"""
+    cutoff = major_score_threshold()
+    return [
+        (name, value)
+        for name, value in sort_major_scores(scores)
+        if value >= cutoff and name not in {"other", "闲聊"}
+    ]
+
+
+def _intent_multi_settings() -> tuple[int, float]:
+    max_n = _MAX_INTENTS_DEFAULT
+    thresh = 0.55
+    try:
+        ensure_uvgraph_root()
+        from src.configs import get_yaml_config
+
+        block = ((get_yaml_config() or {}).get("b2b_api") or {}).get("intent_classify") or {}
+        if block.get("multi_intent_threshold") is not None:
+            thresh = float(block["multi_intent_threshold"])
+        elif block.get("score_threshold") is not None:
+            thresh = float(block["score_threshold"])
+        if block.get("max_intents") is not None:
+            max_n = int(block["max_intents"])
+    except Exception:
+        logger.debug("intent multi settings fallback", exc_info=True)
+    return max(1, max_n), max(0.0, min(1.0, thresh))
+
+
+def normalize_intent_results(
+    items: list[CompanionIntentResult],
+    *,
+    min_confidence: float | None = None,
+) -> list[CompanionIntentResult]:
+    """按置信度阈值过滤、去重、去掉被实义意图挤掉的闲聊/other。"""
+    max_n, default_thresh = _intent_multi_settings()
+    cutoff = default_thresh if min_confidence is None else float(min_confidence)
     packed: list[CompanionIntentResult] = []
     seen: set[tuple[str, str]] = set()
     for item in items:
@@ -137,21 +250,33 @@ def normalize_intent_results(items: list[CompanionIntentResult]) -> list[Compani
             continue
         seen.add(key)
         packed.append(item)
-    real = [item for item in packed if item.major not in {"闲聊", "other"}]
-    chosen = real or packed
+    packed.sort(key=lambda row: (-float(row.confidence or 0), row.major, row.intent))
+    above = [item for item in packed if float(item.confidence or 0) >= cutoff]
+    if not above and packed:
+        above = [packed[0]]
+    real = [item for item in above if item.major not in {"闲聊", "other"}]
+    chosen = real or above or packed
     if not chosen:
         chosen = [_pack(major="other", intent="未知意图", confidence=0.0, source="empty", reason="无意图")]
-    return chosen[:_MAX_INTENTS]
+    return chosen[:max_n]
 
 
 def _intent_catalog_prompt() -> str:
+    _, thresh = _intent_multi_settings()
     return load_prompt("intent_catalog").format(
         majors="、".join(_MAJORS),
         intent_lines=intent_prompt_lines(),
+        score_threshold=thresh,
     )
 
 
-def _from_llm_fields(major: str, intent: str, reason: str) -> CompanionIntentResult:
+def _from_llm_fields(
+    major: str,
+    intent: str,
+    reason: str,
+    *,
+    confidence: float = 0.8,
+) -> CompanionIntentResult:
     major = (major or "").strip()
     intent = (intent or "").strip()
     if intent in INTENT_BY_NAME:
@@ -160,13 +285,98 @@ def _from_llm_fields(major: str, intent: str, reason: str) -> CompanionIntentRes
         intent = "未细分"
     if major not in _MAJORS:
         major = "other"
+    score = max(0.0, min(1.0, float(confidence)))
     return _pack(
         major=major,
         intent=intent if major != "other" else "未知意图",
-        confidence=0.8,
+        confidence=score,
         source="llm",
         reason=(reason or "").strip() or "llm",
     )
+
+
+def _items_from_major_scores(scores: dict[str, float] | None) -> list[CompanionIntentResult]:
+    """细意图没给出来时，用达阈值的全大类打分兜出「未细分」。"""
+    return [
+        _pack(
+            major=name,
+            intent="未细分",
+            confidence=value,
+            source="llm-major-score",
+            reason=f"细意图缺失，全大类打分 {value}",
+            major_scores=scores,
+        )
+        for name, value in _majors_above_threshold(scores)
+    ]
+
+
+def _reconcile_intents_with_major_scores(
+    packed: list[CompanionIntentResult],
+    scores: dict[str, float],
+    text: str,
+    model: Any = None,
+) -> list[CompanionIntentResult]:
+    """业务规则：大意图分 ≥ major_score_threshold 即视为存在，补全细意图并进入并行任务。"""
+    clamped = _clamp_major_scores(scores)
+    majors_required = [name for name, _value in _majors_above_threshold(clamped)]
+    fine_cutoff, _ = _intent_multi_settings()
+    by_major: dict[str, CompanionIntentResult] = {}
+
+    for item in packed:
+        major = str(item.major or "").strip()
+        if major in {"闲聊", "other", ""}:
+            continue
+        major_conf = float(clamped.get(major, 0.0) or 0.0)
+        if float(item.confidence or 0) >= fine_cutoff or major_conf >= major_score_threshold():
+            prev = by_major.get(major)
+            if prev is None or float(item.confidence or 0) >= float(prev.confidence or 0):
+                by_major[major] = replace(item, major_scores=clamped)
+
+    for name, value in _majors_above_threshold(clamped):
+        if name in by_major:
+            continue
+        row = classify_fine_for_major(text, major=name, model=model, llm_seconds=5)
+        by_major[name] = replace(
+            row,
+            confidence=max(float(row.confidence or 0), float(value)),
+            major_scores=clamped,
+            source=f"{row.source}+major-threshold",
+            reason=f"{row.reason}；大类打分 {value}≥{major_score_threshold()}",
+        )
+
+    if by_major:
+        ordered = sorted(
+            by_major.values(),
+            key=lambda row: (-float(clamped.get(row.major, row.confidence) or 0), row.major),
+        )
+        return ordered
+    if packed:
+        return [replace(item, major_scores=clamped) if not item.major_scores else item for item in packed]
+    return _items_from_major_scores(clamped)
+
+
+def _attach_major_scores(
+    items: list[CompanionIntentResult],
+    scores: dict[str, float] | None,
+) -> list[CompanionIntentResult]:
+    """给还没有全大类打分的结果补分；全 0 视为没打到，不改动。"""
+    packed = _clamp_major_scores(scores)
+    if not any(packed.values()):
+        return items
+    return [
+        item if item.major_scores else replace(item, major_scores=dict(packed))
+        for item in items
+    ]
+
+
+def _ensure_major_scores(
+    items: list[CompanionIntentResult],
+    text: str,
+) -> list[CompanionIntentResult]:
+    """任一条缺打分时才跑一次 BERT 全类别 softmax 兜底。"""
+    if not items or all(item.major_scores for item in items):
+        return items
+    return _attach_major_scores(items, _predict_major_scores_bert(text))
 
 
 def classify_companion_intent_llm(
@@ -185,39 +395,71 @@ def classify_companion_intent_llm(
     from src.langchain.agent.agent_stream import _invoke_structured_output
 
     class IntentItem(BaseModel):
-        major: str = Field(description="大类名称")
+        major: str = Field(description="大类名称，可与 intent 一致时由 intent 反推")
         intent: str = Field(description="细意图名称或未细分")
+        confidence: float = Field(description="0~1，该意图与本轮用户话的相关度")
         reason: str = Field(description="短理由")
 
+    class MajorScore(BaseModel):
+        major: str = Field(description="大类名称，必须覆盖清单里的每一个大类")
+        confidence: float = Field(description="0~1，用户本轮话与该大类的相关度；不相关也要给低分")
+
     class IntentChoices(BaseModel):
-        items: list[IntentItem] = Field(description="本轮意图，1到3条")
+        major_scores: list[MajorScore] = Field(
+            description="全部大类各一条、一条都不能少；按相关度从高到低"
+        )
+        items: list[IntentItem] = Field(
+            description="所有 confidence 达阈值的细意图，可多条；按相关度从高到低"
+        )
 
     human = f"【近期对话】\n{recent_dialogue or '（无）'}\n\n【本轮用户】\n{text}"
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        choice = _invoke_structured_output(
-            model,
-            IntentChoices,
-            [SystemMessage(content=_intent_catalog_prompt()), HumanMessage(content=human)],
+        from algorithm.llm_trace import STAGE_INTENT_MAIN, record_llm_call, serialize_langchain_messages
+
+        msgs = [SystemMessage(content=_intent_catalog_prompt()), HumanMessage(content=human)]
+        choice = _invoke_structured_output(model, IntentChoices, msgs)
+        try:
+            resp_blob = choice.model_dump_json(indent=2) if hasattr(choice, "model_dump_json") else str(choice)
+        except Exception:
+            resp_blob = str(choice)
+        record_llm_call(
+            STAGE_INTENT_MAIN,
+            serialize_langchain_messages(msgs),
+            response=resp_blob,
+            label="classify_companion_intent_llm",
         )
     except Exception:
         logger.warning("llm intent classify failed", exc_info=True)
         return None
     raw_items = list(getattr(choice, "items", None) or [])
+    scores = _clamp_major_scores(
+        {
+            str(row.major or "").strip(): float(getattr(row, "confidence", 0.0) or 0.0)
+            for row in (getattr(choice, "major_scores", None) or [])
+        }
+    )
     packed = [
         _prefer_symptom_care(
             _fill_fine(
-                _from_llm_fields(str(item.major or ""), str(item.intent or ""), str(item.reason or "")),
+                _from_llm_fields(
+                    str(item.major or ""),
+                    str(item.intent or ""),
+                    str(item.reason or ""),
+                    confidence=float(getattr(item, "confidence", 0.8) or 0.8),
+                ),
                 query,
             ),
             query,
         )
         for item in raw_items
     ]
+    packed = _reconcile_intents_with_major_scores(packed, scores, text, model)
     if not packed:
         return None
-    return normalize_intent_results(packed)
+    packed = normalize_intent_results(packed)
+    return [replace(row, major_scores=scores) for row in packed]
 
 
 def _fine_intent_llm_timed(
@@ -245,10 +487,17 @@ def _fine_intent_llm_timed(
                 invoke_model = llm_model.model_copy(update={"timeout": float(seconds)})
             except Exception:
                 invoke_model = llm_model
-        resp = invoke_model.invoke(
-            [SystemMessage(content=system), HumanMessage(content=raw[:400])]
-        )
+        from algorithm.llm_trace import STAGE_INTENT_FINE, record_llm_call, serialize_langchain_messages
+
+        msgs = [SystemMessage(content=system), HumanMessage(content=raw[:400])]
+        resp = invoke_model.invoke(msgs)
         content = str(getattr(resp, "content", "") or "")
+        record_llm_call(
+            STAGE_INTENT_FINE,
+            serialize_langchain_messages(msgs),
+            response=content,
+            label=f"classify_fine_for_major · {locked}",
+        )
         match = _JSON_RE.search(content)
         if not match:
             raise ValueError("fine intent json missing")
@@ -259,9 +508,11 @@ def _fine_intent_llm_timed(
 
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+    from algorithm.llm_trace import run_in_llm_trace_context
+
     pool = ThreadPoolExecutor(max_workers=1)
     try:
-        return pool.submit(_call).result(timeout=seconds)
+        return pool.submit(lambda: run_in_llm_trace_context(_call)).result(timeout=seconds)
     except FuturesTimeout:
         logger.warning("fine intent llm timeout after %ss", seconds)
         return None
@@ -287,6 +538,7 @@ def _prefer_symptom_care(item: CompanionIntentResult, text: str) -> CompanionInt
         confidence=max(item.confidence, 0.85),
         source=f"{item.source}+rule",
         reason=(item.reason or "") + "；护理/止血走生活注意事项",
+        major_scores=item.major_scores,
     )
 
 
@@ -311,7 +563,7 @@ def classify_fine_for_major(
         if picked:
             intent_name, reason = picked
             if intent_name in names:
-                packed = _pack(major=locked, intent=intent_name, confidence=0.85, source="llm", reason=reason)
+                packed = _pack(major=locked, intent=intent_name, confidence=0.65, source="llm", reason=reason)
             else:
                 packed = _pack(major=locked, intent="未细分", confidence=0.6, source="llm", reason=reason)
             return _prefer_symptom_care(_fill_fine(packed, raw), raw)
@@ -327,7 +579,8 @@ def classify_fine_for_major(
     )
 
 
-def _predict_major_bert(text: str) -> tuple[str, float] | None:
+def _predict_major_scores_bert(text: str) -> dict[str, float] | None:
+    """BERT 走全类别 softmax，对全部大类都打分（模型没覆盖的类别留 0）。"""
     bundle = _major_bert_bundle()
     if bundle is None:
         return None
@@ -340,14 +593,30 @@ def _predict_major_bert(text: str) -> tuple[str, float] | None:
     with torch.no_grad():
         outputs = model(**inputs)
         probs = torch.softmax(outputs.logits, dim=-1)[0]
-        pred_id = int(torch.argmax(probs, dim=-1).item())
-        confidence = float(probs[pred_id].item())
-    label = mapping.get(str(pred_id), "other")
-    if label == "chitchat":
-        label = "other"
+    scores = _empty_major_scores()
+    for idx, prob in enumerate(probs.tolist()):
+        label = mapping.get(str(idx), "other")
+        if label == "chitchat":
+            label = "other"
+        if label not in scores:
+            continue
+        scores[label] = max(scores[label], round(float(prob), 4))
+    return scores
+
+
+def _top_major_bert(scores: dict[str, float] | None) -> tuple[str, float] | None:
+    """BERT 全大类打分里取最高的一条。"""
+    ranked = sort_major_scores(scores)
+    if not ranked:
+        return None
+    label, confidence = ranked[0]
     if label not in _MAJORS:
         label = "other"
-    return label, round(confidence, 4)
+    return label, round(float(confidence), 4)
+
+
+def _predict_major_bert(text: str) -> tuple[str, float] | None:
+    return _top_major_bert(_predict_major_scores_bert(text))
 
 
 def _qwen_major(text: str) -> tuple[str, str] | None:
@@ -397,10 +666,9 @@ def _qwen_major(text: str) -> tuple[str, str] | None:
 
 def _rewrite_synonyms(text: str) -> str:
     try:
-        with b2b_src_imports():
-            from schema.entity_synonyms import rewrite_synonyms_in_text
+        from b2c_b2b_bridge import b2b_entity_synonyms
 
-            mapped = rewrite_synonyms_in_text(text)
+        mapped = b2b_entity_synonyms().rewrite_synonyms_in_text(text)
     except Exception:
         logger.warning("intent synonym rewrite failed", exc_info=True)
         return text
@@ -424,6 +692,9 @@ def _fill_fine(item: CompanionIntentResult, text: str) -> CompanionIntentResult:
     if item.intent not in ("未细分", "未知意图", ""):
         return item
     fine = match_intent(text, major=item.major)
+    if not fine and item.major == "具体任务" and any(k in text for k in ("提醒", "赶飞机")):
+        if not any(k in text for k in ("吃药", "服药", "打卡", "复诊", "挂号", "取报告")):
+            fine = "提醒用户某日复查或随访"
     if not fine:
         return item
     return _pack(
@@ -432,7 +703,39 @@ def _fill_fine(item: CompanionIntentResult, text: str) -> CompanionIntentResult:
         confidence=item.confidence,
         source=f"{item.source}+rule",
         reason=(item.reason or "") + "；细意图规则补全",
+        major_scores=item.major_scores,
     )
+
+
+def classify_intent_fallback_multi(text: str) -> list[CompanionIntentResult]:
+    """规则 + BERT 大类：关键词可命中多条细意图。"""
+    raw = (text or "").strip()
+    if not raw:
+        return [
+            _pack(major="other", intent="未知意图", confidence=1.0, source="empty", reason="空文本"),
+        ]
+    mapped = _rewrite_synonyms(raw)
+    query = mapped or raw
+    hits = match_all_intents(raw) or match_all_intents(query)
+    if hits:
+        packed = [
+            _prefer_symptom_care(
+                _pack(
+                    major=major_of(name),
+                    intent=name,
+                    confidence=0.72,
+                    source="rule",
+                    reason="多意图关键词命中",
+                ),
+                raw,
+            )
+            for name in hits
+            if name in INTENT_BY_NAME
+        ]
+        if packed:
+            return normalize_intent_results(packed)
+    single = classify_intent_fallback(raw)
+    return normalize_intent_results([single])
 
 
 def classify_intent_fallback(text: str) -> CompanionIntentResult:
@@ -448,7 +751,8 @@ def classify_intent_fallback(text: str) -> CompanionIntentResult:
     confidence = 0.0
     reason = ""
 
-    bert = _predict_major_bert(query)
+    bert_scores = _predict_major_scores_bert(query)
+    bert = _top_major_bert(bert_scores)
     if bert:
         major, confidence = bert
         source = "bert"
@@ -478,14 +782,29 @@ def classify_intent_fallback(text: str) -> CompanionIntentResult:
                 confidence=0.0,
                 source="none",
                 reason="无大意图模型且 qwen 不可用",
+                major_scores=bert_scores,
             )
 
     if major == "other":
-        return _pack(major="other", intent="未知意图", confidence=confidence, source=source, reason=reason)
+        return _pack(
+            major="other",
+            intent="未知意图",
+            confidence=confidence,
+            source=source,
+            reason=reason,
+            major_scores=bert_scores,
+        )
 
     fine = match_intent(raw, major=major) or match_intent(query, major=major)
     if fine:
-        packed = _pack(major=major, intent=fine, confidence=confidence, source=source, reason=reason + "；细规则")
+        packed = _pack(
+            major=major,
+            intent=fine,
+            confidence=confidence,
+            source=source,
+            reason=reason + "；细规则",
+            major_scores=bert_scores,
+        )
     else:
         packed = _pack(
             major=major,
@@ -493,19 +812,66 @@ def classify_intent_fallback(text: str) -> CompanionIntentResult:
             confidence=confidence,
             source=source,
             reason=reason + "；细意图未命中",
+            major_scores=bert_scores,
         )
     return _prefer_symptom_care(packed, raw)
 
 
-def classify_companion_intent(
+def classify_companion_intents_bert(text: str) -> list[CompanionIntentResult]:
+    """评测专用：大意图用训练 BERT 全类别 softmax，细意图规则补全，不走 LLM/qwen。"""
+    raw = (text or "").strip()
+    if not raw:
+        return [
+            _pack(major="other", intent="未知意图", confidence=1.0, source="empty", reason="空文本"),
+        ]
+    mapped = _rewrite_synonyms(raw)
+    query = mapped or raw
+    scores = _predict_major_scores_bert(query)
+    if scores is None:
+        return [
+            _pack(
+                major="other",
+                intent="未知意图",
+                confidence=0.0,
+                source="none",
+                reason="无大意图 BERT 权重（checkpoint/intent_major/best_model）",
+            ),
+        ]
+    packed: list[CompanionIntentResult] = []
+    hits = match_all_intents(raw) or match_all_intents(query)
+    if hits:
+        for name in hits:
+            if name not in INTENT_BY_NAME:
+                continue
+            packed.append(
+                _prefer_symptom_care(
+                    _pack(
+                        major=major_of(name),
+                        intent=name,
+                        confidence=0.72,
+                        source="rule",
+                        reason="BERT 评测：关键词命中细意图",
+                        major_scores=scores,
+                    ),
+                    raw,
+                )
+            )
+    packed = _reconcile_intents_with_major_scores(packed, scores, raw, model=None)
+    packed = normalize_intent_results(packed)
+    return [_prefer_symptom_care(item, raw) for item in packed]
+
+
+def classify_companion_intents(
     text: str,
     model: Any = None,
     *,
     recent_dialogue: str = "",
-) -> CompanionIntentResult:
+) -> list[CompanionIntentResult]:
     raw = (text or "").strip()
     if not raw:
-        return _pack(major="other", intent="未知意图", confidence=1.0, source="empty", reason="空文本")
+        return [
+            _pack(major="other", intent="未知意图", confidence=1.0, source="empty", reason="空文本"),
+        ]
     mapped = _rewrite_synonyms(raw)
     query = mapped or raw
     items = classify_companion_intent_llm(
@@ -514,5 +880,35 @@ def classify_companion_intent(
         recent_dialogue=recent_dialogue,
     )
     if items:
-        return _prefer_symptom_care(items[0], raw)
-    return _prefer_symptom_care(classify_intent_fallback(raw), raw)
+        return [_prefer_symptom_care(item, raw) for item in items]
+    llm_model = model if model is not None else _default_chat_model()
+    rows = [_prefer_symptom_care(item, raw) for item in classify_intent_fallback_multi(raw)]
+    rows = _ensure_major_scores(rows, query)
+    scores = dict(rows[0].major_scores) if rows and rows[0].major_scores else (_predict_major_scores_bert(query) or {})
+    rows = _reconcile_intents_with_major_scores(rows, scores, raw, llm_model)
+    rows = normalize_intent_results(rows)
+    return rows
+
+
+def classify_companion_intent(
+    text: str,
+    model: Any = None,
+    *,
+    recent_dialogue: str = "",
+) -> CompanionIntentResult:
+    items = classify_companion_intents(text, model, recent_dialogue=recent_dialogue)
+    return items[0]
+
+
+def resolve_companion_intent_items(
+    text: str,
+    model: Any = None,
+    *,
+    recent_dialogue: str = "",
+    backend: str = "llm",
+) -> list[CompanionIntentResult]:
+    """意图解析子步；完整进线请用 algorithm.companion_turn.resolve_companion_turn。"""
+    mode = (backend or "llm").strip().lower()
+    if mode == "bert":
+        return classify_companion_intents_bert(text)
+    return classify_companion_intents(text, model, recent_dialogue=recent_dialogue)

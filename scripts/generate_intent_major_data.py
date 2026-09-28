@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 B2C_ROOT = Path(__file__).resolve().parents[1]
-B2B_SRC = B2C_ROOT.parent / "B2B business" / "src"
+B2B_SRC = Path(r"D:\program\B2B") / "src"
 if str(B2B_SRC) not in sys.path:
     sys.path.insert(0, str(B2B_SRC))
 DATA_DIR = B2C_ROOT / "data" / "intent_major"

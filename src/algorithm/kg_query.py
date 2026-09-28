@@ -1,4 +1,4 @@
-"""公共知识：Neo4j / RAGFlow / Milvus 分源查询，结果给 LLM，不让模型编清单。"""
+"""公共知识：Neo4j / RAGFlow / Chroma 分源查询，结果给 LLM，不让模型编清单。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ __all__ = [
     "fulfill_kg_intent",
     "query_consult_graph",
     "search_exam_handbook",
-    "search_milvus_knowledge",
+    "search_chroma_knowledge",
 ]
 
 _QUESTION_TAIL = (
@@ -171,12 +171,12 @@ def search_exam_handbook(
     return _pack(name, seeds, items, _summarize(name, seeds, items), "ragflow", alignments=alignments or [])
 
 
-def search_milvus_knowledge(
+def search_chroma_knowledge(
     *,
     query: str,
     handler: str = "",
 ) -> dict[str, Any]:
-    """只查 Milvus 疾病/症状向量。"""
+    """只查 Chroma 疾病/症状向量。"""
     name = (handler or "").strip() or "fallback"
     text = (query or "").strip()
     try:
@@ -184,12 +184,12 @@ def search_milvus_knowledge(
         from algorithm.rag.pipeline import run_rag_pipeline
 
         if is_rag_enhanced():
-            return run_rag_pipeline("milvus", query=text, handler=name)
+            return run_rag_pipeline("chroma", query=text, handler=name)
     except Exception:
-        logger.warning("rag milvus pipeline failed", exc_info=True)
-    items = _milvus_snips(text)
+        logger.warning("rag chroma pipeline failed", exc_info=True)
+    items = _chroma_snips(text)
     seeds = [text] if len(text) >= 2 else []
-    return _pack(name, seeds, items, _summarize(name, seeds, items), "milvus")
+    return _pack(name, seeds, items, _summarize(name, seeds, items), "chroma")
 
 
 def _pack(
@@ -340,12 +340,9 @@ def _disease_plain(driver: Any, db: str, seeds: list[str]) -> list[str]:
     lines: list[str] = []
     plain_map: dict[str, str] = {}
     try:
-        from configs.paths_b2c import b2b_src_imports
+        from b2c_b2b_bridge import b2b_disease_plain
 
-        with b2b_src_imports():
-            from schema.disease_plain import DISEASE_PLAIN_EXPLAIN
-
-            plain_map = dict(DISEASE_PLAIN_EXPLAIN)
+        plain_map = dict(b2b_disease_plain().DISEASE_PLAIN_EXPLAIN)
     except Exception:
         logger.debug("disease_plain table unavailable", exc_info=True)
     for seed in seeds:
@@ -439,31 +436,10 @@ def _graph_scan(
     return list(dict.fromkeys(found))[:10], "neo4j"
 
 
-def _milvus_snips(query: str) -> list[str]:
-    text = (query or "").strip()
-    if not text:
-        return []
-    try:
-        ensure_uvgraph_root()
-        from src.algorithm.milvus_subprocess import run_milvus_search_isolated
+def _chroma_snips(query: str) -> list[str]:
+    from algorithm.chroma_knowledge import chroma_knowledge_snippets
 
-        hits = run_milvus_search_isolated(text, limit=4) or []
-    except Exception:
-        logger.warning("kg milvus search failed", exc_info=True)
-        return []
-    lines: list[str] = []
-    for hit in hits:
-        if not isinstance(hit, dict):
-            continue
-        name = str(hit.get("name") or hit.get("disease") or hit.get("title") or "").strip()
-        snippet = str(hit.get("text") or hit.get("content") or hit.get("metadata") or "").strip()
-        if name and snippet:
-            lines.append(f"{name}：{snippet[:80]}")
-        elif name:
-            lines.append(name)
-        elif snippet:
-            lines.append(snippet[:80])
-    return lines[:6]
+    return chroma_knowledge_snippets(query, limit=4)
 
 
 def _props_snippet(labels: list[str], props: dict[str, Any], seed: str) -> str:

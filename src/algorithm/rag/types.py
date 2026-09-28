@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-RagChannel = Literal["handbook", "milvus", "graph"]
+RagChannel = Literal["handbook", "chroma", "graph"]
 
 __all__ = ["RagChannel", "RagHit", "RagPipelineConfig"]
 

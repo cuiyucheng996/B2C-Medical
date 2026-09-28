@@ -1,79 +1,80 @@
-# B2C business
+# B2C business（C 端陪聊）
 
-基于 **Spring AI**（`spring-ai-alibaba-starter-dashscope`，通义千问 DashScope）的 C 端业务服务。
+**单一生产栈：Python**。陪聊 API、LangGraph 编排、Agent、会话与 Redis 记忆均在本目录 `src/`；由 `run.py` 启动 **Uvicorn + FastAPI**（默认 **8002**）。
 
-**双栈架构**：生产环境只部署 **JDK + Spring Boot JAR**；Python 仅用于离线训练 BERT 纠错模型并导出 ONNX，不进生产服务器。Agent 开发规范见 `.agents/skills/b2c-business/SKILL.md`。
+与 uvgraph 主仓关系：运行时 `sys.path` 先挂 **uvgraph 根**（共享 `src.redis`、`src.llm`、Neo4j 用户记忆等），再挂 **B2C `src/`**（`api` / `agent` / `graph` / `session`）。Agent 规范见 `.agents/skills/b2c-business/SKILL.md`。
 
-## 技术栈与版本
+## 技术栈
 
-| 组件 | 版本 | 说明 |
-|---|---|---|
-| Java | 17 | 本机已装 JDK 17.0.12 LTS |
-| Spring Boot | 3.5.10 | 与 dashscope starter 锁定版本对齐 |
-| Spring AI | 1.1.2 | 由 `spring-ai-bom` 统一管理 |
-| Spring AI Alibaba | 1.1.2.2 | `spring-ai-alibaba-starter-dashscope` |
-| Maven | 3.9.16 | 通过 Maven Wrapper 使用 |
+| 组件 | 说明 |
+|------|------|
+| Python | `>=3.11`，依赖由仓库根 `uv` / `pyproject.toml` 管理 |
+| API | FastAPI `api.server:app` |
+| 编排 | LangGraph（`graph/companion.py` 等） |
+| LLM / Embedding | 主项目 `src.llm`、DashScope（`.env`） |
+| 短期记忆 | Redis `conversation:short|compress:{session_id}`、槽位 `conversation:slots:{user_id}` |
+| 长期记忆 | Neo4j / Graphiti 形态（`memory/graphiti_store.py`） |
+| MCP | `tools/mcp_bridge.py`，见 `doc/mcp.md` |
+
+历史上曾规划 **Spring Boot + ONNX** 双栈，**C 端已不再采用**；纠错与训练脚本留在 `src/models/`、`src/runner/`（Python 离线），不进独立 Java 服务。
 
 ## 目录结构
 
 ```
 B2C business/
-├── pom.xml
-├── mvnw / mvnw.cmd
-├── .agents/skills/b2c-business/   # Agent 双栈开发规范
-├── src/main/java/com/uvgraph/b2c/ # Java 业务（生产代码）
-│   ├── controller/                # REST 入口
-│   ├── service/                   # 业务编排（待扩展）
-│   └── inference/                 # ONNX 推理（待扩展）
-├── training/                      # Python 离线训练（目标位置，待迁移）
-├── data/ checkpoint/ pretrained/ models/
-└── src/main/resources/application.yml
+├── run.py                 # 生产入口（默认 127.0.0.1:8002）
+├── doc/                   # mcp.md 等
+├── tests/
+└── src/
+    ├── api/server.py      # REST + 静态调试页
+    ├── agent/             # create_agent、子意图 Worker
+    ├── graph/             # LangGraph 节点与 checkpoint
+    ├── session.py         # SessionStore
+    ├── algorithm/         # 业务算法（与图解耦）
+    ├── memory/            # ingest / search 封装
+    ├── tools/               # 本地工具 + MCP bridge
+    ├── middleware/
+    ├── configs/paths_b2c.py
+    ├── models/            # BERT 等（训练/评测，非 Java ONNX 路径）
+    └── web/               # companion 调试台
 ```
-
-当前 Python（`src/configs/`、`src/models/`）与 Maven 标准目录混用，后续迁入 `training/`。详见 `.agents/skills/b2c-business/architecture.md`。
-
-## 缓存策略
-
-Maven 发行版与依赖仓库全部放在项目内 `.m2` 目录（`mvnw` 已内置 `MAVEN_USER_HOME` 指向），**不写 C 盘**。如需换位置，修改 `mvnw.cmd` / `mvnw` 顶部的 `MAVEN_USER_HOME` 即可。
 
 ## 运行
 
+在 **uvgraph 仓库根**（有 `.venv` 与 `.env`）：
+
 ```powershell
-# 1. 准备 API Key（与主项目 uvgraph 共用 .env 里的 DASHSCOPE_API_KEY）
-$env:DASHSCOPE_API_KEY = "sk-xxxx"
-
-# 2. 首次构建（自动下载 Maven + 依赖，进 .m2）
-.\mvnw.cmd clean package -DskipTests
-
-# 3. 启动
-.\mvnw.cmd spring-boot:run
+uv run python "B2C business/run.py"
+# 或指定端口
+uv run python "B2C business/run.py" --port 8002 --reload
 ```
 
 启动后：
 
-- 健康检查：http://127.0.0.1:8080/actuator/health
-- Chat 示例：`GET http://127.0.0.1:8080/api/chat?message=你好`
+- 健康检查：`GET http://127.0.0.1:8002/healthcheck`
+- 陪聊调试页：`http://127.0.0.1:8002/`（`companion.html`）
+- 工具登记：`GET http://127.0.0.1:8002/api/tools`
+
+## 生产部署（Python 单进程 / 多 worker）
+
+| 项 | 建议 |
+|----|------|
+| 进程 | `uvicorn api.server:app`，`app_dir=B2C business/src`，`--workers N` 时 **同用户会话须粘滞或外置 SessionStore**（当前默认进程内 `SessionStore`） |
+| 配置 | 仓库根 `.env`：`DASHSCOPE_API_KEY`、`KIMI_*`、`REDIS_*`、Neo4j 等（与主项目一致，业务代码用 `src/config.py`，勿散落 `load_dotenv`） |
+| 监控 | HTTP `GET /healthcheck`；应用日志（`logging`）；可选对 Redis / Neo4j 做依赖探针（未内置则需网关或 sidecar） |
+| 图谱 / RAG | 优先走本服务内算法与 MCP；需 B2B 问诊能力时用 `b2c_b2b_bridge`，**不**再经 Java 8080 |
 
 ## 常用命令
 
 ```powershell
-.\mvnw.cmd -v                    # 查看 Maven 版本
-.\mvnw.cmd compile               # 编译
-.\mvnw.cmd clean package -DskipTests   # 打包
-.\mvnw.cmd spring-boot:run       # 运行
+# 图编译自检
+uv run python -m graph.companion   # 需在 B2C src 为 cwd 或经 run.py 同 path 设置
+
+# 单测
+D:\program\uvgraph\uvgraph\.venv\Scripts\python.exe "B2C business\tests\test_session_memory.py" -v
 ```
 
-## 双栈分工
+## 延伸阅读
 
-| 层 | 技术 | 环境 |
-|---|---|---|
-| 业务 API、LLM 对话 | Java Spring Boot + Spring AI | JDK 生产 |
-| BERT 纠错推理 | Java + ONNX Runtime | JDK 生产 |
-| 模型训练、导出 ONNX | Python PyTorch | 开发机 / CI |
-
-## 后续扩展方向
-
-1. 迁移 Python 到 `training/`，补 `export_onnx.py`
-2. Java 增加 `SpellCheckInferenceEngine` + `SpellCheckController`
-3. 问诊 Agent：`ChatClient` + Tool Calling（可调 uvgraph 主服务 RAG）
-4. Neo4j / Redis / MySQL 按需在 `pom.xml` 追加
+- 架构与请求路径：`.agents/skills/b2c-business/architecture.md`
+- MCP： `doc/mcp.md`

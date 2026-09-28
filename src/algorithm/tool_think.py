@@ -149,10 +149,17 @@ def judge_tool_envelopes(
         f"usable=true 的信封：\n{blob}"
     )
     try:
-        resp = llm.invoke(
-            [SystemMessage(content=load_prompt("companion_think")), HumanMessage(content=human)]
-        )
+        from algorithm.llm_trace import STAGE_THINK, record_llm_call, serialize_langchain_messages
+
+        msgs = [SystemMessage(content=load_prompt("companion_think")), HumanMessage(content=human)]
+        resp = llm.invoke(msgs)
         text = str(getattr(resp, "content", "") or "").strip()
+        record_llm_call(
+            STAGE_THINK,
+            serialize_langchain_messages(msgs),
+            response=text,
+            label="judge_tool_envelopes",
+        )
     except Exception:
         logger.warning("tool think llm failed", exc_info=True)
         return None

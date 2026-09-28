@@ -1,14 +1,14 @@
-"""离线评测：意图金标 + 工具绑定。不调陪聊 LLM。"""
+"""离线评测：意图金标 + 工具绑定。与陪聊同一套进线解析。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from algorithm.intent_classify import classify_companion_intent
+from algorithm.companion_turn import resolve_companion_turn
 from tools.companion_tools import tools_for_intent
 from tools.setup import INTENT_BIND
 
-__all__ = ["GOLD_CASES", "BIND_CASES", "run_eval", "probe_env"]
+__all__ = ["GOLD_CASES", "BIND_CASES", "run_eval", "probe_env", "classify_one"]
 
 GOLD_CASES: list[dict[str, Any]] = [
     {"id": "chat_hi", "text": "你好", "major": "闲聊", "tools_empty": True},
@@ -38,8 +38,24 @@ def _tool_names(major: str, handler: str) -> list[str]:
     return [str(getattr(t, "name", "") or "") for t in tools_for_intent(major=major, handler=handler)]
 
 
+def _primary_hit(text: str) -> Any:
+    turn = resolve_companion_turn(text, backend="llm", apply_file_route=False)
+    if not turn.get("ok"):
+        return None
+    items = turn.get("items") or []
+    return items[0] if items else None
+
+
 def _score_gold(case: dict[str, Any]) -> dict[str, Any]:
-    hit = classify_companion_intent(str(case["text"]))
+    hit = _primary_hit(str(case["text"]))
+    if hit is None:
+        return {
+            "id": case["id"],
+            "kind": "gold",
+            "ok": False,
+            "text": case["text"],
+            "fail": ["turn"],
+        }
     tools = _tool_names(hit.major, hit.handler)
     want_major = str(case.get("major") or "")
     want_handler = str(case.get("handler") or "")
@@ -94,17 +110,23 @@ def classify_one(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if not raw:
         return {"ok": False, "reason": "empty"}
-    hit = classify_companion_intent(raw)
-    tools = _tool_names(hit.major, hit.handler)
+    turn = resolve_companion_turn(raw, backend="llm", apply_file_route=False)
+    if not turn.get("ok"):
+        return turn
+    hit = (turn.get("items") or [None])[0]
+    if hit is None:
+        return {"ok": False, "reason": "no_intent"}
     return {
         "ok": True,
         "text": raw,
+        "query_after_preprocess": turn.get("text") or raw,
+        "preprocess": turn.get("preprocess") or {},
         "major": hit.major,
         "intent": hit.intent,
         "handler": hit.handler,
         "source": hit.source,
         "confidence": hit.confidence,
-        "tools": tools,
+        "tools": list(turn.get("bound_tools") or []),
     }
 
 
@@ -142,7 +164,7 @@ def probe_env() -> dict[str, Any]:
         from algorithm.user_accounts import list_users
 
         users = list_users(limit=20)
-        add("neo4j_userinfo", True, f"{len(users)} 个 UserInfo")
+        add("neo4j_userinfo", True, f"{len(users)} 条 UserInfo")
     except Exception as exc:
         add("neo4j_userinfo", False, str(exc))
     try:

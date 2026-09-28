@@ -42,6 +42,13 @@ class McpGuardMiddleware(AgentMiddleware):
         if not is_denied_mcp_tool(name):
             return None
         call_id = str((request.tool_call or {}).get("id") or "")
+        from middleware.middleware_trace import append_middleware_trace
+
+        append_middleware_trace(
+            "McpGuardMiddleware",
+            f"拦截危险 MCP 写操作：{name}",
+            runtime=getattr(request, "runtime", None),
+        )
         return ToolMessage(
             content=dump_envelope(
                 tool=name,

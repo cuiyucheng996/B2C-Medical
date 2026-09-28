@@ -34,6 +34,12 @@ def _normalize_result(result: Any, request: ToolCallRequest) -> Any:
     else:
         content = result
         status = ""
+    from middleware.middleware_trace import append_middleware_trace
+
+    append_middleware_trace(
+        "CompanionToolEnvelopeMiddleware",
+        f"归一化工具回执为 CompanionToolEnvelope：{name or '？'}",
+    )
     return ToolMessage(
         content=normalize_tool_content(name, content, status=status),
         tool_call_id=call_id,

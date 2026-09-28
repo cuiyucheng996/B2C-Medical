@@ -30,4 +30,11 @@ class CompanionObserveMiddleware(AgentMiddleware):
         if any(isinstance(msg, HumanMessage) and marker in str(getattr(msg, "content", "") or "") for msg in messages):
             return None
         extra = HumanMessage(content=f"{marker}\n{observe}\n请按需调用工具后回复用户。")
+        from middleware.middleware_trace import append_middleware_trace
+
+        append_middleware_trace(
+            "CompanionObserveMiddleware",
+            f"注入预处理观察（{len(observe)} 字）",
+            runtime=runtime,
+        )
         return {"messages": [*messages, extra]}

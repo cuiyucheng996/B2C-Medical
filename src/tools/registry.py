@@ -60,8 +60,11 @@ class CompanionToolRegistry:
         from tools.setup import INTENT_BIND
 
         key = ((major or "").strip(), (handler or "").strip())
-        names = INTENT_BIND.get(key) or INTENT_BIND.get((key[0], ""))
-        if not names:
+        if key in INTENT_BIND:
+            names = INTENT_BIND[key]
+        else:
+            names = INTENT_BIND.get((key[0], ""))
+        if names is None or not names:
             return []
         bound: list[BaseTool] = []
         for name in names:

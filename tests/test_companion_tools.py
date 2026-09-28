@@ -11,6 +11,7 @@ from unittest import mock
 _SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(_SRC))
 
+from algorithm.intent_rule import match_intent
 from tools.companion_tools import (
     companion_turn,
     note_task_appointment,
@@ -31,13 +32,23 @@ class CompanionToolsetTest(unittest.TestCase):
         names = [t.name for t in tools_for_intent(major="个人记忆问答", handler="mem_companion_fact")]
         self.assertEqual(names, ["lookup_life_facts"])
 
+    def test_memory_session_recall_no_tools(self) -> None:
+        names = [t.name for t in tools_for_intent(major="个人记忆问答", handler="mem_session_recall")]
+        self.assertEqual(names, [])
+
+    def test_memory_session_recall_rule(self) -> None:
+        self.assertEqual(
+            match_intent("我刚才说什么了", major="个人记忆问答"),
+            "复述用户在本会话刚说过的话",
+        )
+
     def test_kg_binds_graph(self) -> None:
         names = [t.name for t in tools_for_intent(major="公共知识问答", handler="kg_part_diseases")]
         self.assertEqual(names, ["query_consult_graph"])
 
     def test_kg_binds_handbook(self) -> None:
         names = [t.name for t in tools_for_intent(major="公共知识问答", handler="kg_exam_meaning")]
-        self.assertEqual(names, ["search_exam_handbook", "search_milvus_knowledge"])
+        self.assertEqual(names, ["search_exam_handbook", "search_chroma_knowledge"])
 
     def test_kg_care_handbook_only(self) -> None:
         names = [t.name for t in tools_for_intent(major="公共知识问答", handler="kg_symptom_care")]
@@ -94,7 +105,7 @@ class CompanionToolsetTest(unittest.TestCase):
         names = {row["name"] for row in list_companion_registry()}
         self.assertIn("query_consult_graph", names)
         self.assertIn("search_exam_handbook", names)
-        self.assertIn("search_milvus_knowledge", names)
+        self.assertIn("search_chroma_knowledge", names)
         self.assertIn("mcp:time", names)
         self.assertIn("mcp:fetch", names)
         self.assertIn("mcp:graphiti", names)

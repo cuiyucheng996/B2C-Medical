@@ -1,4 +1,4 @@
-"""调模型前做增量上下文压缩（已压段落在 Redis，只压新窗口外对话）。"""
+"""调模型前做增量上下文压缩（已压段落在 Redis session_id 键下，只压新窗口外对话）。"""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ class CompanionCompressMiddleware(AgentMiddleware):
         ctx = getattr(runtime, "context", None)
         if not isinstance(ctx, CompanionRunContext):
             return None
-        user_id = (ctx.user_id or "").strip()
-        if not user_id:
+        session_id = (ctx.session_id or "").strip()
+        if not session_id:
             return None
         messages = list(state.get("messages") or [])
         if not messages:
@@ -27,7 +27,17 @@ class CompanionCompressMiddleware(AgentMiddleware):
 
         packed = apply_incremental_compress(
             [msg for msg in messages if isinstance(msg, BaseMessage)],
-            user_id=user_id,
-            session_id=ctx.session_id,
+            session_id=session_id,
+        )
+        from middleware.middleware_trace import append_middleware_trace
+
+        if len(packed) != len(messages):
+            detail = f"增量压缩上下文 {len(messages)} → {len(packed)} 条消息"
+        else:
+            detail = f"本轮未缩短消息条数（仍为 {len(messages)} 条；未超过保留窗口或摘要未生成）"
+        append_middleware_trace(
+            "CompanionCompressMiddleware",
+            detail,
+            runtime=runtime,
         )
         return {"messages": packed}

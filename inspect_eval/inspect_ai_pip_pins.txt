@@ -1,0 +1,5 @@
+# inspect_ai 的 s3fs → aiobotocore 需要较新 botocore（含 MaxAttemptsSeeder）
+# 若 inspect view 报 MaxAttemptsSeeder，在项目根执行：
+#   uv pip install -r "B2C business/inspect_eval/inspect_ai_pip_pins.txt" --python .venv/Scripts/python.exe
+botocore>=1.43.75
+aiobotocore>=2.18.0

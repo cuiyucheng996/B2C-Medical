@@ -1,0 +1,398 @@
+major_order:
+- 风险拦截
+- 报告指标解读
+- 个人记忆问答
+- 具体任务
+- 公共知识问答
+- 近况陈述
+- 闲聊
+rule_order:
+- 拦截急症或求救描述
+- 拦截具体用药剂量咨询
+- 查询某检查项目是检查什么的
+- 查询某指标的正常范围或含义
+- 查询某疾病的通俗解释
+- 查询某证型常见有哪些表现
+- 查询某症状的生活注意事项
+- 查询某部位有哪些常见疾病
+- 查询某疾病常见有哪些症状
+- 查询某症状常见出现在哪些部位
+- 提醒用户按时服药
+- 预约复诊或挂号
+- 提醒回传或领取检查报告
+- 提醒用户某日复查或随访
+- 记录用户完成一次打卡
+- 复述用户在本会话刚说过的话
+- 查询用户曾经提到的部位或疾病
+- 查询用户最近的心情或事件
+- 上传检查报告并解读
+- 解读用户提到的检查报告
+- 对比某指标与历史记录
+- 解读用户上传的日常图片
+- 解读用户上传的普通文档
+- 陈述当前身体不适
+- 陈述生活事件心情或天气
+- 感谢或结束对话
+- 寒暄打招呼
+intents:
+  查询某部位有哪些常见疾病:
+    major: 公共知识问答
+    handler: kg_part_diseases
+    slots:
+    - 部位
+    rule_keywords:
+    - 这个部位有哪些病
+    - 头会得什么病
+    - 常见疾病
+    - 常见有哪些病
+    - 会得什么病
+    train_templates:
+    - 头部常见有哪些病
+    - 胃这个部位会得什么病
+    - 腰部常见疾病有哪些
+    - 胸口这块容易有什么病
+  查询某疾病常见有哪些症状:
+    major: 公共知识问答
+    handler: kg_disease_symptoms
+    slots:
+    - 疾病
+    rule_keywords:
+    - 有哪些症状
+    - 会有什么表现
+    - 典型症状
+    hint: 问某病有哪些表现，不是问出血怎么处理。
+    train_templates:
+    - 胃炎有哪些症状
+    - 感冒会有什么表现
+    - 高血压典型症状是什么
+    - 腰椎间盘突出有哪些症状
+  查询某症状常见出现在哪些部位:
+    major: 公共知识问答
+    handler: kg_symptom_parts
+    slots:
+    - 症状
+    rule_keywords:
+    - 出现在哪个部位
+    - 是哪个地方的疼
+    train_templates:
+    - 刺痛常见出现在哪个部位
+    - 胀痛一般是哪个地方的
+    - 心悸通常在哪里不舒服
+  查询某疾病的通俗解释:
+    major: 公共知识问答
+    handler: kg_disease_plain
+    slots:
+    - 疾病
+    rule_keywords:
+    - 是什么病
+    - 通俗讲
+    - 解释一下这个病
+    train_templates:
+    - 胃炎是什么病
+    - 通俗讲讲脂肪肝
+    - 解释一下这个病叫失眠
+  查询某检查项目是检查什么的:
+    major: 公共知识问答
+    handler: kg_exam_meaning
+    slots:
+    - 检查
+    rule_keywords:
+    - 这个检查
+    - 化验是查
+    - B超是看
+    - CT是看
+    - 检查什么
+    train_templates:
+    - 血常规这个检查是查什么的
+    - B超是看什么的
+    - 胃镜检查什么
+  查询某指标的正常范围或含义:
+    major: 公共知识问答
+    handler: kg_lab_range
+    slots:
+    - 指标
+    rule_keywords:
+    - 正常值
+    - 参考范围
+    - 偏高是什么
+    - 偏低是什么
+    - 这个指标
+    train_templates:
+    - 转氨酶正常值是多少
+    - 血压偏高是什么意思
+    - 这个指标参考范围呢
+  查询某症状的生活注意事项:
+    major: 公共知识问答
+    handler: kg_symptom_care
+    slots:
+    - 症状
+    rule_keywords:
+    - 注意什么
+    - 能不能运动
+    - 饮食注意
+    - 忌口
+    - 注意事项
+    - 怎么止血
+    - 止血
+    - 怎么护理
+    - 怎么处理
+    hint: 症状的护理、现场处理、止血、忌口、能不能运动、饮食注意。例：「发生创伤出血时怎么止血」「头痛要注意什么」。不要标未细分。
+    train_templates:
+    - 头痛要注意什么
+    - 失眠饮食注意什么
+    - 咳嗽能不能运动
+    - 发生创伤出血时怎么止血
+  查询某证型常见有哪些表现:
+    major: 公共知识问答
+    handler: kg_syndrome_signs
+    slots:
+    - 证型
+    rule_keywords:
+    - 什么证
+    - 证型表现
+    - 肝郁常见
+    - 脾虚常见
+    train_templates:
+    - 肝郁常见有哪些表现
+    - 脾虚是什么证型表现
+    - 湿热证常见表现
+  提醒用户某日复查或随访:
+    major: 具体任务
+    handler: task_remind
+    slots:
+    - 时间
+    rule_keywords:
+    - 提醒我
+    - 定个提醒
+    - 设个提醒
+    - 赶飞机
+    - 到时候复查
+    - 随访提醒
+    train_templates:
+    - 提醒我下周复查
+    - 到时候随访提醒我一声
+    - 帮我设个复查提醒
+  记录用户完成一次打卡:
+    major: 具体任务
+    handler: task_checkin
+    slots: []
+    rule_keywords:
+    - 打卡了
+    - 今天喝了药
+    - 完成打卡
+    train_templates:
+    - 今天药打卡了
+    - 完成打卡
+    - 今天喝了药
+  提醒用户按时服药:
+    major: 具体任务
+    handler: task_medication
+    slots:
+    - 时间
+    rule_keywords:
+    - 该吃药
+    - 吃药提醒
+    - 服药提醒
+    - 提醒我吃药
+    - 别忘了吃药
+    - 按时吃药
+  预约复诊或挂号:
+    major: 具体任务
+    handler: task_appointment
+    slots:
+    - 时间
+    rule_keywords:
+    - 帮我挂号
+    - 挂个号
+    - 预约挂号
+    - 约个号
+    - 预约复诊
+    - 下个月复诊
+    - 要复诊
+  提醒回传或领取检查报告:
+    major: 具体任务
+    handler: task_report
+    slots:
+    - 检查
+    - 时间
+    rule_keywords:
+    - 取报告
+    - 拿报告
+    - 回传报告
+    - 上传报告
+    - 报告出来
+    - 结果出来了
+  查询用户曾经提到的部位或疾病:
+    major: 个人记忆问答
+    handler: mem_stated_consult
+    slots: []
+    rule_keywords:
+    - 我说过哪里
+    - 我上次说的病
+    - 记得我哪里不舒服
+    train_templates:
+    - 我说过哪里不舒服
+    - 还记得我上次说的病吗
+    - 我提过什么部位
+  查询用户最近的心情或事件:
+    major: 个人记忆问答
+    handler: mem_companion_fact
+    slots: []
+    rule_keywords:
+    - 我最近心情
+    - 还记得我作业
+    - 上次去学校
+    hint: 问以前聊过的心情、作业、出差等入库事实，不是复述上一句原话。
+    train_templates:
+    - 我最近心情怎么样你还记得吗
+    - 还记得我作业没有吗
+    - 上次去学校你记得吗
+  复述用户在本会话刚说过的话:
+    major: 个人记忆问答
+    handler: mem_session_recall
+    slots: []
+    rule_keywords:
+    - 我刚才说什么
+    - 我刚刚说什么
+    - 我刚才说了
+    - 刚刚我说
+    - 上一句我说
+    - 我上句话
+    - 还记得我刚才
+    - 复述一下我刚才
+    - 我前面那句
+    hint: 问「刚才/上一句/我刚刚说了什么」，要复述当前对话里的原话。不是查库里心情事件（mem_companion_fact），也不是查部位疾病画像。
+  解读用户提到的检查报告:
+    major: 报告指标解读
+    handler: report_explain
+    slots:
+    - 检查
+    rule_keywords:
+    - 帮我看看报告
+    - 化验单
+    - 报告怎么看
+    train_templates:
+    - 帮我看看这份化验单
+    - 报告怎么看
+    - 帮我看看检查报告
+  上传检查报告并解读:
+    major: 报告指标解读
+    handler: report_upload
+    slots:
+    - 检查
+    rule_keywords:
+    - 上传检查报告
+    - 上传化验单
+    - 上传体检单
+    - pdf报告
+  对比某指标与历史记录:
+    major: 报告指标解读
+    handler: report_compare
+    slots:
+    - 指标
+    rule_keywords:
+    - 和上次比
+    - 比上次高
+    - 指标变化
+    train_templates:
+    - 转氨酶和上次比怎么样
+    - 这个指标比上次高吗
+    - 指标变化大吗
+  解读用户上传的日常图片:
+    major: 近况陈述
+    handler: file_image
+    slots: []
+    rule_keywords:
+    - 上传图片
+    - 【上传图片】
+    - 看看这张图
+  解读用户上传的普通文档:
+    major: 近况陈述
+    handler: file_document
+    slots: []
+    rule_keywords:
+    - 上传文档
+    - 【上传文档】
+    - 看看这个pdf
+  拦截急症或求救描述:
+    major: 风险拦截
+    handler: risk_emergency
+    slots: []
+    rule_keywords:
+    - 救命
+    - 急救
+    - 叫救护车
+    - 晕倒
+    - 剧烈胸痛
+    hint: 仅限明确救命、叫救护车、晕倒、剧烈胸痛。问怎么止血/怎么护理属于「查询某症状的生活注意事项」，不是本条。
+    train_templates:
+    - 快救命
+    - 要叫救护车吗
+    - 我晕倒了剧烈胸痛
+  拦截具体用药剂量咨询:
+    major: 风险拦截
+    handler: risk_dosage
+    slots: []
+    rule_keywords:
+    - 吃几粒
+    - 一天几次
+    - 剂量
+    - 能停药吗
+    - 加大剂量
+    train_templates:
+    - 这个药一天几次
+    - 能停药吗剂量怎么调
+    - 吃几粒合适
+  陈述当前身体不适:
+    major: 近况陈述
+    handler: status_complaint
+    slots:
+    - 症状
+    rule_keywords:
+    - 我头疼
+    - 不舒服好几天
+    - 胸口闷
+    train_templates:
+    - 我头疼好几天了
+    - 胸口闷不舒服好几天
+    - 最近胃痛
+  陈述生活事件心情或天气:
+    major: 近况陈述
+    handler: status_life
+    slots: []
+    rule_keywords:
+    - 今天很开心
+    - 下雨了
+    - 去学校玩
+    train_templates:
+    - 今天在学校玩得很开心
+    - 外面下雨了心情不好
+    - 作业也没有今天很轻松
+  寒暄打招呼:
+    major: 闲聊
+    handler: chat_hello
+    slots: []
+    rule_keywords:
+    - 你好
+    - 您好
+    - 在吗
+    - hello
+    train_templates:
+    - 你好
+    - 您好在吗
+    - hello
+  感谢或结束对话:
+    major: 闲聊
+    handler: chat_thanks
+    slots: []
+    rule_keywords:
+    - 谢谢
+    - 再见
+    - 辛苦了
+    train_templates:
+    - 谢谢
+    - 再见
+    - 辛苦了
+# 仅 INTENT_BIND / 图路由使用，无独立细意图名
+extra_bind_handlers:
+- report_tables

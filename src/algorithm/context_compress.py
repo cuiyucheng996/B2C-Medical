@@ -93,31 +93,37 @@ def _summarize_delta_llm(delta: list[BaseMessage]) -> str | None:
         return None
 
 
+def _merge_short_and_state(session_id: str, messages: list[BaseMessage]) -> list[BaseMessage]:
+    """进模型的 messages 已含本场 history，不再用 short 全量覆盖，避免摘要和原文叠在一起。"""
+    del session_id
+    return list(messages)
+
+
 def apply_incremental_compress(
     messages: list[BaseMessage],
     *,
-    user_id: str,
-    session_id: str = "",
+    session_id: str,
 ) -> list[BaseMessage]:
-    uid = (user_id or "").strip()
-    if not messages:
+    sid = (session_id or "").strip()
+    if not messages and not sid:
+        return []
+    merged = _merge_short_and_state(sid, messages) if sid else list(messages)
+    if not merged:
         return []
     cfg = _compress_cfg()
     keep = int(cfg.get("keep_user_turns") or KEEP_USER_TURNS)
-    humans = _dialogue_human_indices(messages)
+    humans = _dialogue_human_indices(merged)
     if len(humans) <= keep:
-        return [_shrink_recent(m) for m in messages]
+        return [_shrink_recent(m) for m in merged]
 
     cut = humans[-keep]
-    old, recent = messages[:cut], messages[cut:]
+    old, recent = merged[:cut], merged[cut:]
     old_humans = _dialogue_human_indices(old)
     covered_target = len(old_humans)
 
     from src.redis.context_compress import load_compress_sync, save_compress_sync
 
-    stored = load_compress_sync(uid) if uid else {"covered_humans": 0, "segments": [], "session_id": ""}
-    if session_id and stored.get("session_id") and stored["session_id"] != session_id:
-        stored = {"covered_humans": 0, "segments": [], "session_id": session_id}
+    stored = load_compress_sync(sid) if sid else {"covered_humans": 0, "segments": []}
 
     covered = int(stored.get("covered_humans") or 0)
     segments = list(stored.get("segments") or [])
@@ -131,13 +137,12 @@ def apply_incremental_compress(
         if piece:
             segments.append(piece)
         covered = covered_target
-        if uid:
+        if sid:
             save_compress_sync(
-                uid,
+                sid,
                 {
                     "covered_humans": covered,
                     "segments": segments,
-                    "session_id": session_id,
                 },
             )
 

@@ -178,11 +178,11 @@
             (a.node_label ? "（" + a.node_label + "）" : "")
           ).join("；")
         : "未对齐";
-      const milvus = data.milvus || {};
-      $("kbMilvus").innerHTML =
-        '<span class="pill ' + (milvus.queried ? "ok" : "bad") + '">' +
-        (milvus.queried ? "已查询" : "未查询") + "</span> " +
-        esc(milvus.detail || "");
+      const chroma = data.chroma || {};
+      $("kbChroma").innerHTML =
+        '<span class="pill ' + (chroma.queried ? "ok" : "bad") + '">' +
+        (chroma.queried ? "已查询" : "未查询") + "</span> " +
+        esc(chroma.detail || "");
       const rows = data.rerank || [];
       $("kbBody").innerHTML = rows.length ? rows.map((r) => {
         const mv = Number(r.moved || 0);

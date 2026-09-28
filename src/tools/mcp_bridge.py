@@ -15,7 +15,7 @@ from configs.paths_b2c import ensure_uvgraph_root
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp_tools_for_major"]
+__all__ = ["mcp_tools_for_major", "is_mcp_tool_name", "mcp_server_for_tool", "split_bound_tools", "tag_tool_trace_row"]
 
 _cache: dict[str, list[BaseTool]] | None = None
 _B2C_SRC = Path(__file__).resolve().parents[1]
@@ -23,6 +23,44 @@ _NPX_TO_MODULE = {
     "@modelcontextprotocol/server-time": "companion_mcp.stdio_time",
     "@modelcontextprotocol/server-fetch": "companion_mcp.stdio_fetch",
 }
+_PYTHON_MODULES = {
+    "companion_mcp.stdio_bailian_kb",
+    "companion_mcp.stdio_dashscope_search",
+    "companion_mcp.stdio_oss",
+    "companion_mcp.stdio_time",
+    "companion_mcp.stdio_fetch",
+}
+
+
+def _auth_headers(spec: dict[str, Any]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    raw = spec.get("headers")
+    if isinstance(raw, dict):
+        headers.update({str(k): str(v) for k, v in raw.items()})
+    env_key = str(spec.get("auth_bearer_env") or "").strip()
+    if env_key:
+        token = (os.getenv(env_key) or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _resolve_url(spec: dict[str, Any]) -> str:
+    url = str(spec.get("url") or "").strip()
+    if url:
+        return url
+    if not spec.get("bailian_mcp"):
+        return ""
+    ensure_uvgraph_root()
+    from src.configs import get_yaml_config
+
+    block = get_yaml_config().get("mcp")
+    aliyun = block.get("aliyun") if isinstance(block, dict) and isinstance(block.get("aliyun"), dict) else {}
+    ws = (os.getenv("BAILIAN_WORKSPACE_ID") or str(aliyun.get("bailian_workspace_id") or "")).strip()
+    region = str(aliyun.get("bailian_region") or "cn-beijing").strip()
+    if not ws:
+        return ""
+    return f"https://{ws}.{region}.maas.aliyuncs.com/api/v1/indices/rag/mcp"
 
 
 def _mcp_yaml() -> dict[str, Any]:
@@ -85,12 +123,16 @@ def _connections() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]
         if not isinstance(spec, dict) or not spec.get("enabled"):
             continue
         transport = str(spec.get("transport") or "streamable_http").strip()
-        url = str(spec.get("url") or "").strip()
+        url = _resolve_url(spec) or str(spec.get("url") or "").strip()
         command = str(spec.get("command") or "").strip()
         if transport in {"stdio"} and command:
             conns[name] = _stdio_conn(command, list(spec.get("args") or []))
         elif url:
-            conns[name] = {"transport": transport, "url": url}
+            conn: dict[str, Any] = {"transport": transport, "url": url}
+            headers = _auth_headers(spec)
+            if headers:
+                conn["headers"] = headers
+            conns[name] = conn
         else:
             continue
         meta[name] = {
@@ -98,6 +140,62 @@ def _connections() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]
             "allow_tools": [str(item) for item in (spec.get("allow_tools") or [])],
         }
     return conns, meta
+
+
+def mcp_server_names() -> frozenset[str]:
+    conns, _ = _connections()
+    return frozenset(conns.keys())
+
+
+def is_mcp_tool_name(name: str) -> bool:
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if lowered.startswith("mcp:"):
+        return True
+    for server in mcp_server_names():
+        prefix = f"{server}_".lower()
+        if lowered.startswith(prefix):
+            return True
+    return False
+
+
+def mcp_server_for_tool(name: str) -> str:
+    raw = (name or "").strip()
+    lowered = raw.lower()
+    for server in sorted(mcp_server_names(), key=len, reverse=True):
+        prefix = f"{server}_".lower()
+        if lowered.startswith(prefix):
+            return server
+    return ""
+
+
+def split_bound_tools(names: list[str]) -> tuple[list[str], list[str]]:
+    local: list[str] = []
+    mcp: list[str] = []
+    for item in names:
+        n = str(item or "").strip()
+        if not n:
+            continue
+        if is_mcp_tool_name(n):
+            mcp.append(n)
+        else:
+            local.append(n)
+    return local, mcp
+
+
+def tag_tool_trace_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    name = str(out.get("name") or "")
+    if is_mcp_tool_name(name):
+        out["source"] = "mcp"
+        server = mcp_server_for_tool(name)
+        if server:
+            out["mcp_server"] = server
+    else:
+        out["source"] = "local"
+    return out
 
 
 async def _load_all() -> dict[str, list[BaseTool]]:

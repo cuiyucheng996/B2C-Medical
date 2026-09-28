@@ -53,6 +53,34 @@ class NormalizeIntentTest(unittest.TestCase):
         )
         self.assertEqual(len(items), 1)
 
+    def test_threshold_keeps_high_scores(self) -> None:
+        low = CompanionIntentResult(
+            intent="寒暄打招呼",
+            major="闲聊",
+            confidence=0.3,
+            source="test",
+            reason="t",
+            slots=(),
+            handler="chat_hello",
+        )
+        high = _item(
+            major="具体任务",
+            intent="提醒用户某日复查或随访",
+            handler="task_remind",
+        )
+        high = CompanionIntentResult(
+            intent=high.intent,
+            major=high.major,
+            confidence=0.9,
+            source=high.source,
+            reason=high.reason,
+            slots=high.slots,
+            handler=high.handler,
+        )
+        items = normalize_intent_results([low, high], min_confidence=0.55)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].handler, "task_remind")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,8 +40,8 @@ class KbEvalTest(unittest.TestCase):
         self.assertEqual(row["channel"], "neo4j")
         self.assertEqual(row["tools"], ["query_consult_graph"])
         self.assertEqual(row["mentions"]["部位"], ["头部"])
-        self.assertFalse(row["milvus"]["queried"])
-        self.assertIn("未查询", row["milvus"]["detail"])
+        self.assertFalse(row["chroma"]["queried"])
+        self.assertIn("未查询", row["chroma"]["detail"])
 
     def test_part_seed_from_alignment(self) -> None:
         from algorithm.kg_query import _resolve_seeds

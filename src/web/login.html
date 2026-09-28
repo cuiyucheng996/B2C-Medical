@@ -67,6 +67,7 @@
   <div class="shell">
     <h1>B2C 测试登录</h1>
     <p class="sub">账号写在 Neo4j 的 UserInfo 上。登录名可自定；内部 user_id 用于陪聊和长期记忆。<a href="/tools" style="color:#2f6f4e;">工具注册表</a> · <a href="/eval" style="color:#2f6f4e;">评测台</a></p>
+    <p class="sub b2c-user-bar"></p>
     <div class="grid">
       <section class="card">
         <h2 style="margin:0 0 8px;font-size:16px;">登录</h2>
@@ -95,15 +96,21 @@
       <div id="userList" class="hint">读取中…</div>
     </section>
   </div>
+  <script src="/b2c_persist.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
 
     const USER_KEY = "b2c-user-id";
 
-    function goChat(userId) {
+    async function goChat(userId) {
       const uid = String(userId || "").trim();
       if (!uid) return;
+      const prev = window.B2cPersist ? B2cPersist.getUserId() : "";
+      if (prev && prev !== uid && window.B2cPersist) {
+        await B2cPersist.releaseRemoteSession(prev);
+      }
       try { localStorage.setItem(USER_KEY, uid); } catch (e) {}
+      if (window.B2cPersist) B2cPersist.setUserId(uid);
       location.href = "/chat?user_id=" + encodeURIComponent(uid);
     }
 
@@ -183,6 +190,7 @@
       goChat(created.user_id || created.login_name);
     };
 
+    if (window.B2cPersist) B2cPersist.mountUserBar(".b2c-user-bar");
     loadUsers();
   </script>
 </body>

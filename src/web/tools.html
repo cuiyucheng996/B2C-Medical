@@ -79,6 +79,7 @@
   <div class="shell">
     <h1>工具注册表</h1>
     <p class="sub">本地 LangChain 工具与已登记的第三方 MCP。按意图装配，不直接改对话页。</p>
+    <p class="nav b2c-user-bar"></p>
     <p class="nav"><a href="/">登录</a> · <a href="/chat">陪聊</a> · <a href="/eval">评测台</a></p>
     <div class="bar">
       <input id="q" type="search" placeholder="按名称、标题、意图筛选" />
@@ -94,6 +95,7 @@
       <tbody id="binds"></tbody>
     </table>
   </div>
+  <script src="/b2c_persist.js"></script>
   <script>
     let tools = [];
     let binds = [];
@@ -134,12 +136,45 @@
       }).join("") || "<p class=\"hint\">没有匹配的工具</p>";
     }
 
-    document.getElementById("q").addEventListener("input", render);
+    function saveToolsDraft() {
+      if (!window.B2cPersist) return;
+      const uid = B2cPersist.getUserId();
+      if (!uid) return;
+      B2cPersist.mergeDraft(uid, {
+        tools: { q: document.getElementById("q").value || "", source: source },
+      });
+    }
+
+    function restoreToolsDraft() {
+      if (!window.B2cPersist) return;
+      B2cPersist.mountUserBar(".b2c-user-bar");
+      const uid = B2cPersist.getUserId();
+      if (!uid) return;
+      const t = B2cPersist.loadLocalDraft(uid).tools || {};
+      if (t.q) document.getElementById("q").value = t.q;
+      if (t.source) {
+        source = t.source;
+        document.querySelectorAll(".chip[data-src]").forEach((x) => {
+          x.classList.toggle("active", x.dataset.src === source);
+        });
+      }
+    }
+    restoreToolsDraft();
+    if (window.B2cPersist && B2cPersist.getUserId()) {
+      B2cPersist.fetchServerDraft(B2cPersist.getUserId()).then(restoreToolsDraft);
+    }
+    window.addEventListener("pagehide", saveToolsDraft);
+
+    document.getElementById("q").addEventListener("input", () => {
+      render();
+      saveToolsDraft();
+    });
     document.querySelectorAll(".chip[data-src]").forEach((btn) => {
       btn.addEventListener("click", () => {
         source = btn.dataset.src;
         document.querySelectorAll(".chip[data-src]").forEach((x) => x.classList.toggle("active", x === btn));
         render();
+        saveToolsDraft();
       });
     });
 

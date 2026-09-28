@@ -18,6 +18,16 @@ def build_entry_push(user_id: str) -> dict[str, Any]:
     from configs.paths_b2c import ensure_uvgraph_root
 
     ensure_uvgraph_root()
+    from algorithm.memory_collect import compose_memory_collect
+
+    collected = compose_memory_collect(uid)
+    if collected:
+        return {
+            "text": collected,
+            "facts": [],
+            "source": "long_memory_collect",
+        }
+
     from algorithm.periodic_digest import load_latest_digest, mark_digest_read
 
     digest = load_latest_digest(uid)

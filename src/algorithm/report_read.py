@@ -22,13 +22,13 @@ def _mentions_list(mentions: dict[str, Any] | None, key: str) -> list[str]:
 
 
 def _handbook(query: str, handler: str) -> dict[str, Any]:
-    from algorithm.kg_query import search_exam_handbook, search_milvus_knowledge
+    from algorithm.kg_query import search_chroma_knowledge, search_exam_handbook
 
     packed = search_exam_handbook(query=query, handler=handler)
     items = list(packed.get("items") or [])
     if items:
         return packed
-    extra = search_milvus_knowledge(query=query, handler=handler)
+    extra = search_chroma_knowledge(query=query, handler=handler)
     return extra if extra.get("items") else packed
 
 

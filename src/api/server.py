@@ -8,10 +8,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from configs.paths_b2c import ensure_uvgraph_root, import_b2c_algorithm
+
+ensure_uvgraph_root()
+_user_accounts = import_b2c_algorithm("user_accounts")
+resolve_user_ref = _user_accounts.resolve_user_ref
+list_users = _user_accounts.list_users
+create_user = _user_accounts.create_user
+login_user = _user_accounts.login_user
+_user_ui_draft = import_b2c_algorithm("user_ui_draft")
+load_user_ui_draft = _user_ui_draft.load_user_ui_draft
+merge_user_ui_draft = _user_ui_draft.merge_user_ui_draft
 
 from agent.companion_agent import CompanionAgent
 from memory.graphiti_store import add_episode, persist_session_findings, search_facts
@@ -32,6 +44,28 @@ def _html_page(name: str) -> Path:
     raise HTTPException(status_code=404, detail=f"{name} missing")
 
 
+async def _session_idle_loop() -> None:
+    from algorithm.session_release import release_companion_session, session_idle_seconds
+    from datetime import datetime, timezone
+
+    await asyncio.sleep(10)
+    while True:
+        try:
+            idle_sec = session_idle_seconds()
+            now = datetime.now(timezone.utc)
+            for session in list(_sessions.list_active()):
+                raw = (session.last_activity_at or session.created_at or "").strip()
+                try:
+                    last = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    last = now
+                if (now - last).total_seconds() >= idle_sec:
+                    release_companion_session(session, _sessions, reason="idle_ttl")
+        except Exception:
+            logger.exception("session idle cleanup failed")
+        await asyncio.sleep(60)
+
+
 async def _digest_loop() -> None:
     from algorithm.periodic_digest import run_daily_digests
 
@@ -44,13 +78,35 @@ async def _digest_loop() -> None:
         await asyncio.sleep(24 * 60 * 60)
 
 
+async def _warm_companion_nlu_once() -> None:
+    await asyncio.sleep(0.3)
+    try:
+        from algorithm.companion_warmup import warm_companion_nlu
+
+        await asyncio.to_thread(warm_companion_nlu)
+    except Exception:
+        logger.exception("companion NLU warm failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    warm_task = asyncio.create_task(_warm_companion_nlu_once())
     task = asyncio.create_task(_digest_loop())
+    idle_task = asyncio.create_task(_session_idle_loop())
     yield
+    warm_task.cancel()
     task.cancel()
+    idle_task.cancel()
+    try:
+        await warm_task
+    except asyncio.CancelledError:
+        pass
     try:
         await task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await idle_task
     except asyncio.CancelledError:
         pass
 
@@ -66,13 +122,34 @@ _sessions = get_session_store()
 
 class SessionCreateRequest(BaseModel):
     user_id: str = Field(..., min_length=1, description="对应 Graphiti group_id / Neo4j UserInfo.id")
+    force_new: bool = False
 
 
 class ChatRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = ""
     resume_token: str = ""
     input_channel: Literal["text", "asr"] = "text"
     think: bool = False
+    hitl_decision: dict[str, Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_text_or_hitl(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            text = str(data.get("text") or "").strip()
+            token = str(data.get("resume_token") or "").strip()
+            decision = data.get("hitl_decision")
+            if not text and not token and not decision:
+                raise ValueError(
+                    "text 不能为空（工具确认可只传 resume_token + hitl_decision）"
+                )
+        return data
+
+
+class IntentEvalRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    backend: Literal["llm", "bert"] = "llm"
+    recent_dialogue: str = ""
 
 
 class TtsRequest(BaseModel):
@@ -221,6 +298,28 @@ def api_eval_env() -> dict[str, Any]:
     return probe_env()
 
 
+class GraphEvalRequest(BaseModel):
+    text: str = ""
+    mode: str = "full"
+
+
+@app.get("/api/eval/graph")
+def api_eval_graph_structure() -> dict[str, Any]:
+    from algorithm.graph_eval import describe_graphs
+
+    return describe_graphs()
+
+
+@app.post("/api/eval/graph")
+async def api_eval_graph_run(req: GraphEvalRequest) -> dict[str, Any]:
+    from algorithm.graph_eval import run_graph_probe
+
+    row = await run_graph_probe(req.text, mode=req.mode)
+    if row.get("reason") == "empty":
+        raise HTTPException(status_code=400, detail="empty")
+    return row
+
+
 @app.post("/api/eval/run")
 def api_eval_run(req: EvalRunRequest) -> dict[str, Any]:
     from algorithm.eval_suite import run_eval
@@ -237,6 +336,30 @@ def api_eval_one(req: ChatRequest) -> dict[str, Any]:
     if not row.get("ok"):
         raise HTTPException(status_code=400, detail=row.get("reason") or "empty")
     return row
+
+
+@app.get("/api/eval/intent/samples")
+def api_eval_intent_samples() -> dict[str, Any]:
+    from algorithm.intent_eval import INTENT_TRY_SAMPLES, intent_catalog_rows
+
+    return {"samples": INTENT_TRY_SAMPLES, "catalog": intent_catalog_rows()}
+
+
+@app.post("/api/eval/intent/one")
+def api_eval_intent_one(req: IntentEvalRequest) -> dict[str, Any]:
+    from algorithm.intent_eval import run_intent_one
+
+    row = run_intent_one(req.text, backend=req.backend, recent_dialogue=req.recent_dialogue)
+    if not row.get("ok"):
+        raise HTTPException(status_code=400, detail=row.get("reason") or "empty")
+    return row
+
+
+@app.post("/api/eval/intent/gold")
+def api_eval_intent_gold() -> dict[str, Any]:
+    from algorithm.intent_eval import run_intent_gold
+
+    return run_intent_gold()
 
 
 class CorefEvalRequest(BaseModel):
@@ -257,6 +380,22 @@ class KbToolProbeRequest(BaseModel):
     tools: list[str] = Field(default_factory=list)
     handler: str = ""
     rag_enhanced: bool | None = None
+
+
+class MemoryIntentRequest(BaseModel):
+    query: str = ""
+    user_id: str = ""
+
+
+class MemoryQaRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1)
+
+
+class MemoryToolProbeRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    query: str = ""
+    tools: list[str] = Field(default_factory=list)
 
 
 class RagEnhanceConfigBody(BaseModel):
@@ -290,6 +429,13 @@ def api_eval_kb_tools_catalog() -> dict[str, Any]:
     return {"tools": list_kb_probe_tools(), "handlers": list_kb_probe_handlers()}
 
 
+@app.get("/api/eval/kb/samples")
+def api_eval_kb_samples() -> dict[str, Any]:
+    from algorithm.kb_eval import KB_SAMPLES
+
+    return {"samples": KB_SAMPLES}
+
+
 @app.post("/api/eval/kb")
 def api_eval_kb(req: KbEvalRequest) -> dict[str, Any]:
     from algorithm.kb_eval import run_kb_eval
@@ -320,6 +466,103 @@ def api_eval_kb_tool_probe(req: KbToolProbeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="empty")
     if row.get("reason") == "no_tools":
         raise HTTPException(status_code=400, detail="请至少选择一个工具")
+    return row
+
+
+@app.get("/api/eval/kb/status")
+def api_eval_kb_status() -> dict[str, Any]:
+    from algorithm.kb_eval import get_kb_eval_status
+
+    return get_kb_eval_status()
+
+
+@app.post("/api/eval/kb/warm")
+def api_eval_kb_warm() -> dict[str, Any]:
+    from algorithm.companion_warmup import warm_companion_nlu
+    from algorithm.kb_eval import get_kb_eval_status
+
+    try:
+        stats = warm_companion_nlu()
+        status = get_kb_eval_status()
+    except Exception as exc:
+        logger.exception("eval kb warm failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "warm": stats, "status": status}
+
+
+@app.get("/api/eval/memory/tools")
+def api_eval_memory_tools_catalog() -> dict[str, Any]:
+    from algorithm.memory_eval import MEM_INTENT_SAMPLES, list_memory_handlers, list_memory_probe_tools
+
+    return {
+        "tools": list_memory_probe_tools(),
+        "handlers": list_memory_handlers(),
+        "samples": MEM_INTENT_SAMPLES,
+    }
+
+
+@app.post("/api/eval/memory/intent")
+def api_eval_memory_intent(req: MemoryIntentRequest) -> dict[str, Any]:
+    from algorithm.memory_eval import run_memory_intent_one, run_memory_tool_probe
+
+    row = run_memory_intent_one(req.query)
+    if not row.get("ok"):
+        raise HTTPException(status_code=400, detail=row.get("reason") or "empty")
+    uid = (req.user_id or "").strip()
+    if uid:
+        row["user_id"] = uid
+        tools = list(row.get("tools") or [])
+        if row.get("is_memory_major") and tools:
+            probe = run_memory_tool_probe(user_id=uid, query=req.query, tools=tools)
+            row["tool_results"] = list(probe.get("tool_results") or [])
+            row["timing"] = probe.get("timing") or {}
+    return row
+
+
+@app.post("/api/eval/memory/qa")
+def api_eval_memory_qa(req: MemoryQaRequest) -> dict[str, Any]:
+    from algorithm.memory_eval import run_memory_qa
+
+    row = run_memory_qa(user_id=req.user_id, query=req.query)
+    if row.get("reason") == "no_user_id":
+        raise HTTPException(status_code=400, detail="请填写 user_id")
+    if row.get("reason") == "empty":
+        raise HTTPException(status_code=400, detail="empty")
+    return row
+
+
+@app.post("/api/eval/memory/intent-gold")
+def api_eval_memory_intent_gold() -> dict[str, Any]:
+    from algorithm.memory_eval import run_memory_intent_gold
+
+    return run_memory_intent_gold()
+
+
+@app.post("/api/eval/memory/bind-gold")
+def api_eval_memory_bind_gold() -> dict[str, Any]:
+    from algorithm.memory_eval import run_memory_bind_gold
+
+    return run_memory_bind_gold()
+
+
+@app.post("/api/eval/memory/tools")
+def api_eval_memory_tool_probe(req: MemoryToolProbeRequest) -> dict[str, Any]:
+    from algorithm.memory_eval import run_memory_tool_probe
+
+    try:
+        row = run_memory_tool_probe(
+            user_id=req.user_id,
+            query=req.query,
+            tools=req.tools,
+        )
+    except Exception as exc:
+        logger.exception("eval memory tool probe failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    reason = str(row.get("reason") or "")
+    if reason == "no_user_id":
+        raise HTTPException(status_code=400, detail="请填写 user_id")
+    if reason == "no_tools":
+        raise HTTPException(status_code=400, detail="请至少选择一个可直调工具")
     return row
 
 
@@ -445,8 +688,6 @@ async def api_eval_ragflow_ingest(
 
 @app.get("/api/users")
 def api_list_users() -> dict[str, Any]:
-    from algorithm.user_accounts import list_users
-
     try:
         return {"ok": True, "users": list_users()}
     except Exception as exc:
@@ -455,8 +696,6 @@ def api_list_users() -> dict[str, Any]:
 
 @app.post("/api/users")
 def api_create_user(req: RegisterRequest) -> dict[str, Any]:
-    from algorithm.user_accounts import create_user
-
     result = create_user(login_name=req.login_name, display_name=req.display_name, pin=req.pin)
     if not result.get("ok"):
         reason = str(result.get("reason") or "create_failed")
@@ -467,8 +706,6 @@ def api_create_user(req: RegisterRequest) -> dict[str, Any]:
 
 @app.post("/api/auth/login")
 def api_login(req: LoginRequest) -> dict[str, Any]:
-    from algorithm.user_accounts import login_user
-
     result = login_user(login_name=req.login_name, pin=req.pin)
     if not result.get("ok"):
         reason = str(result.get("reason") or "login_failed")
@@ -488,20 +725,109 @@ def api_run_digests() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/b2c_persist.js")
+def b2c_persist_js() -> FileResponse:
+    path = WEB_DIR / "b2c_persist.js"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="b2c_persist.js missing")
+    return FileResponse(path, media_type="application/javascript")
+
+
+@app.get("/api/users/{user_id}/active-session")
+def get_user_active_session(user_id: str) -> dict[str, Any]:
+    uid = resolve_user_ref(user_id.strip()) or user_id.strip()
+    session = _sessions.get_active_for_user(uid)
+    if session is None:
+        raise HTTPException(status_code=404, detail="no_active_session")
+    return {"ok": True, "resumed": True, "session": session.to_dict()}
+
+
+@app.get("/api/users/{user_id}/ui-draft")
+def get_user_ui_draft(user_id: str) -> dict[str, Any]:
+    uid = resolve_user_ref(user_id.strip()) or user_id.strip()
+    return {"ok": True, "user_id": uid, "draft": load_user_ui_draft(uid)}
+
+
+@app.put("/api/users/{user_id}/ui-draft")
+async def put_user_ui_draft(user_id: str, request: Request) -> dict[str, Any]:
+    uid = resolve_user_ref(user_id.strip()) or user_id.strip()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    patch = {k: body[k] for k in ("chat", "eval", "tools") if k in body}
+    if not patch:
+        patch = body
+    draft = merge_user_ui_draft(uid, patch)
+    return {"ok": True, "user_id": uid, "draft": draft}
+
+
 @app.post("/api/sessions")
 def create_session(req: SessionCreateRequest) -> dict[str, Any]:
-    from algorithm.user_accounts import resolve_user_ref
-
+    uid = resolve_user_ref(req.user_id.strip()) or req.user_id.strip()
+    replayed = False
     try:
-        session = _sessions.create(resolve_user_ref(req.user_id.strip()) or req.user_id.strip())
+        if req.force_new:
+            existing = _sessions.get_active_for_user(uid)
+            if existing is not None:
+                from algorithm.session_release import release_companion_session
+
+                release_companion_session(existing, _sessions, reason="force_new")
+            session = _sessions.create_new(uid)
+            resumed = False
+        else:
+            existing = _sessions.get_active_for_user(uid)
+            if existing is not None:
+                from algorithm.short_memory import (
+                    load_b2c_short_messages,
+                    sync_b2c_session_memory,
+                    touch_b2c_session_redis,
+                )
+
+                if existing.user and not load_b2c_short_messages(existing.session_id):
+                    sync_b2c_session_memory(existing)
+                else:
+                    touch_b2c_session_redis(uid, session_id=existing.session_id)
+                payload = existing.to_dict()
+                payload["resumed"] = True
+                return payload
+            session = _sessions.create(uid)
+            resumed = False
+            replayed = False
+            draft = load_user_ui_draft(uid)
+            chat = draft.get("chat") if isinstance(draft.get("chat"), dict) else {}
+            if chat.get("released_at"):
+                chat = {}
+            for row in list(chat.get("messages") or []):
+                if not isinstance(row, dict):
+                    continue
+                role_type = str(row.get("role_type") or row.get("role") or "user")
+                if role_type not in {"user", "assistant", "system"}:
+                    role_type = "user"
+                content = str(row.get("content") or "").strip()
+                if content:
+                    session.append(role_type=role_type, content=content, role=str(row.get("role") or role_type))
+                    replayed = True
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from algorithm.short_memory import sync_b2c_session_memory
+
+    if session.user:
+        sync_b2c_session_memory(session)
+        payload = session.to_dict()
+        payload["resumed"] = bool(resumed)
+        payload["restored_from_draft"] = bool(replayed)
+        return payload
     from algorithm.greeting_push import build_entry_push
 
     push = build_entry_push(session.group_id)
     session.append(role_type="assistant", content=str(push.get("text") or ""), role="assistant")
+    sync_b2c_session_memory(session)
     payload = session.to_dict()
     payload["push"] = push
+    payload["resumed"] = False
     return payload
 
 
@@ -515,16 +841,16 @@ def get_session(session_id: str) -> dict[str, Any]:
 
 @app.post("/api/sessions/{session_id}/close")
 def close_session(session_id: str) -> dict[str, Any]:
-    """关页 / 点结束：把本场用户话抽离入库。过程中不写 Neo4j。"""
+    """点结束 / 登出 / 新建前关场：抽离入库并写 user_id 草稿，从 SessionStore 摘除。"""
+    from algorithm.session_release import release_companion_session
+
     session = _sessions.get(session_id)
     if session is None:
         return {
             "session": None,
             "ingest": {"ok": True, "skipped": True, "reason": "already_gone"},
         }
-    ingest = persist_session_findings(session)
-    _sessions.drop(session)
-    return {"session": session.to_dict(), "ingest": ingest}
+    return release_companion_session(session, _sessions, reason="explicit_close")
 
 
 @app.post("/api/sessions/{session_id}/report")
@@ -599,7 +925,11 @@ def chat(session_id: str, req: ChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="会话不存在")
     try:
         return _agent.reply(
-            session, req.text, resume_token=req.resume_token, think=req.think
+            session,
+            req.text,
+            resume_token=req.resume_token,
+            think=req.think,
+            hitl_decision=req.hitl_decision,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -615,7 +945,11 @@ async def chat_stream(session_id: str, req: ChatRequest) -> StreamingResponse:
     async def event_gen():
         try:
             async for chunk in _agent.stream_reply(
-                session, req.text, resume_token=req.resume_token, think=req.think
+                session,
+                req.text,
+                resume_token=req.resume_token,
+                think=req.think,
+                hitl_decision=req.hitl_decision,
             ):
                 yield chunk
         except ValueError as exc:

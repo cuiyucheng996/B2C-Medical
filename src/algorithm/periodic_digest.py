@@ -1,4 +1,4 @@
-"""每日陪伴小结：扫有长期记忆的用户，写入 CompanionDigest。"""
+"""进场长期记忆收集：扫有长期记忆的用户，写入 CompanionDigest。"""
 
 from __future__ import annotations
 
@@ -31,30 +31,10 @@ def _driver_db():
     return get_neo4j_driver(), str(NEO4J_CONFIG.get("database") or "neo4j")
 
 
-def _compose(period: str, facts: list[dict[str, Any]]) -> str:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for item in facts:
-        text = str(item.get("fact") or item.get("name") or "").strip()
-        if item.get("negated"):
-            text = "已排除：" + str(item.get("name") or text)
-        if not text or text.startswith("user("):
-            continue
-        key = text.replace(" ", "")
-        if key in seen:
-            continue
-        seen.add(key)
-        lines.append(text)
-        if len(lines) >= 6:
-            break
-    if not lines:
-        return ""
-    bullets = "\n".join(f"- {line}" for line in lines)
-    return (
-        f"【每日陪伴小结 · {period}】\n"
-        f"根据你留下的长期记忆，最近仍有效的记录：\n{bullets}\n"
-        "这是定期归纳，不是体检报告，也不是诊断。有变化直接说。"
-    )
+def _compose(user_id: str) -> str:
+    from algorithm.memory_collect import compose_memory_collect
+
+    return compose_memory_collect(user_id)
 
 
 def run_daily_digests(*, period: str | None = None) -> dict[str, Any]:
@@ -71,8 +51,6 @@ def run_daily_digests(*, period: str | None = None) -> dict[str, Any]:
     written = 0
     skipped = 0
     users = [str(rec.data().get("id") or "") for rec in listed.records]
-    ensure_uvgraph_root()
-    from src.algorithm.user_memory import load_user_memory_card
 
     for uid in users:
         if not uid:
@@ -90,8 +68,7 @@ def run_daily_digests(*, period: str | None = None) -> dict[str, Any]:
         if existed.records:
             skipped += 1
             continue
-        card = load_user_memory_card(uid, limit=8)
-        text = _compose(day, list(card.get("companion_facts") or []))
+        text = _compose(uid)
         if not text:
             skipped += 1
             continue

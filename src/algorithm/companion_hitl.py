@@ -1,31 +1,39 @@
-"""C 端 HITL：不靠 LangGraph。钥匙是 user_id + resume_token。"""
+"""C 端 HITL：待办状态在 LangGraph checkpointer（见 hitl_checkpoint）。"""
 
 from __future__ import annotations
 
-import json
-import logging
-from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
-from configs.paths_b2c import ensure_uvgraph_root
-
-logger = logging.getLogger(__name__)
+from algorithm.hitl_checkpoint import (
+    HITL_KIND_SLOT,
+    HITL_KIND_TOOL,
+    clear_session_hitl,
+    consume_slot_hitl,
+    get_pending_hitl,
+    pop_tool_pending,
+    put_slot_pending,
+    put_tool_pending,
+    read_tool_pending,
+    slot_thread_id,
+)
 
 __all__ = [
+    "HITL_KIND_SLOT",
+    "HITL_KIND_TOOL",
     "ask_if_needed",
+    "build_tool_hitl_resume",
     "clear_hitl",
     "consume_hitl",
+    "format_tool_hitl_question",
     "get_pending_hitl",
+    "parse_client_hitl_decision",
     "save_hitl",
+    "save_tool_hitl",
+    "slot_thread_id",
 ]
 
-_NS = "companion:hitl"
-_TTL = 86400  # 关场不清；24 小时无续跑由 Redis 过期删除
-_mem: dict[str, dict[str, Any]] = {}
 _TASK_HINTS = ("提醒", "打卡", "复查", "随访", "日历", "吃药", "服药", "复诊", "挂号", "报告")
 
-# 具体任务 handler → (缺槽追问话术, agent_name)
 _TASK_ASK: dict[str, tuple[str, str]] = {
     "task_remind": ("复查或随访大概安排在哪一天？", "note_task_remind"),
     "task_checkin": ("这次打卡完成的是哪件事？", "note_task_checkin"),
@@ -38,116 +46,140 @@ _REPORT_HINTS = ("报告", "化验", "体检", "检查单", "验血", "【上传
 _METRIC_HINTS = ("糖", "胆固醇", "转氨酶", "血压", "尿酸", "甘油三酯", "血红蛋白", "alt", "ast", "ldl", "hdl")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _key(user_id: str) -> str:
-    return f"{_NS}:{(user_id or '').strip()}"
-
-
-def _client():
-    ensure_uvgraph_root()
-    from src.configs import REDIS_CONFIG
-    from redis import Redis as SyncRedis
-
-    return SyncRedis(
-        host=REDIS_CONFIG["host"],
-        port=int(REDIS_CONFIG["port"]),
-        db=int(REDIS_CONFIG.get("db") or 0),
-        password=REDIS_CONFIG.get("password") or None,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
-    )
-
-
 def save_hitl(
-    user_id: str,
+    session_id: str,
     *,
     question: str,
     agent_name: str,
     state: dict[str, Any],
+    hitl_kind: str = HITL_KIND_SLOT,
+    action_requests: list[dict[str, Any]] | None = None,
+    review_configs: list[dict[str, Any]] | None = None,
+    thread_id: str = "",
+    user_id: str = "",
 ) -> dict[str, Any]:
-    uid = (user_id or "").strip()
-    token = str(uuid4())
-    row = {
-        "resume_token": token,
-        "pending": True,
-        "question": (question or "").strip(),
-        "agent_name": (agent_name or "").strip(),
-        "state": dict(state or {}),
-        "created_at": _now(),
-        "user_id": uid,
-    }
-    if not uid:
+    """挂起待办。session_id 必填；user_id 仅兼容旧调用，可忽略。"""
+    sid = (session_id or "").strip()
+    if str(hitl_kind or "") == HITL_KIND_TOOL:
+        row = {
+            "resume_token": (thread_id or "").strip(),
+            "thread_id": (thread_id or "").strip(),
+            "pending": True,
+            "hitl_kind": HITL_KIND_TOOL,
+            "question": (question or "").strip(),
+            "agent_name": (agent_name or "").strip(),
+            "state": dict(state or {}),
+            "action_requests": list(action_requests or []),
+            "review_configs": list(review_configs or []),
+            "session_id": sid,
+            "user_id": (user_id or "").strip(),
+        }
+        put_tool_pending(sid, row)
         return row
-    _mem[uid] = row
-    try:
-        client = _client()
-        try:
-            client.set(_key(uid), json.dumps(row, ensure_ascii=False), ex=_TTL)
-        finally:
-            client.close()
-    except Exception:
-        logger.warning("save hitl redis failed user_id=%s", uid)
+    return put_slot_pending(
+        sid,
+        question=question,
+        agent_name=agent_name,
+        state=state,
+    )
+
+
+def save_tool_hitl(session_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    put_tool_pending(session_id, row)
     return row
 
 
-def get_pending_hitl(user_id: str) -> dict[str, Any] | None:
-    uid = (user_id or "").strip()
-    if not uid:
+def consume_hitl(
+    session_id: str,
+    resume_token: str = "",
+    *,
+    kinds: tuple[str, ...] | None = None,
+    user_text: str = "",
+) -> dict[str, Any] | None:
+    sid = (session_id or "").strip()
+    if kinds and HITL_KIND_TOOL in kinds and HITL_KIND_SLOT not in kinds:
+        pending = read_tool_pending(sid)
+        if not pending:
+            return None
+        token = (resume_token or "").strip()
+        expected = str(pending.get("resume_token") or pending.get("thread_id") or "")
+        if token and expected and token != expected:
+            return None
+        return pop_tool_pending(sid)
+    if kinds and HITL_KIND_SLOT not in (kinds or (HITL_KIND_SLOT,)):
         return None
-    raw = None
-    try:
-        client = _client()
-        try:
-            raw = client.get(_key(uid))
-        finally:
-            client.close()
-    except Exception:
-        logger.warning("get hitl redis failed user_id=%s", uid)
-        raw = None
-    if raw:
-        try:
-            row = json.loads(raw)
-        except json.JSONDecodeError:
-            row = None
-        if isinstance(row, dict) and row.get("pending"):
-            _mem[uid] = row
-            return dict(row)
-    row = _mem.get(uid)
-    if isinstance(row, dict) and row.get("pending"):
-        return dict(row)
-    return None
+    return consume_slot_hitl(sid, resume_token, user_text)
 
 
-def consume_hitl(user_id: str, resume_token: str = "") -> dict[str, Any] | None:
-    """取出并清除挂起快照。未传 token 则按该用户当前挂起项续跑。"""
-    pending = get_pending_hitl(user_id)
-    if not pending:
-        return None
-    token = (resume_token or "").strip()
-    expected = str(pending.get("resume_token") or "")
-    if token and expected and token != expected:
-        return None
-    clear_hitl(user_id)
-    return pending
+def clear_hitl(session_id: str) -> None:
+    clear_session_hitl(session_id)
 
 
-def clear_hitl(user_id: str) -> None:
-    uid = (user_id or "").strip()
-    if not uid:
-        return
-    _mem.pop(uid, None)
-    try:
-        client = _client()
-        try:
-            client.delete(_key(uid))
-        finally:
-            client.close()
-    except Exception:
-        logger.warning("clear hitl redis failed user_id=%s", uid)
+def format_tool_hitl_question(hitl_request: dict[str, Any]) -> str:
+    import json
+
+    actions = list(hitl_request.get("action_requests") or [])
+    if not actions:
+        return "请确认是否执行待审批的工具调用。"
+    lines = ["请确认是否执行以下操作（可批准 / 修改参数 / 拒绝 / 用文字说明）："]
+    for item in actions:
+        name = str(item.get("name") or "")
+        args = item.get("args") or {}
+        lines.append(f"· {name}：{json.dumps(args, ensure_ascii=False)}")
+        desc = str(item.get("description") or "").strip()
+        if desc:
+            lines.append(f"  {desc}")
+    return "\n".join(lines)
+
+
+def build_tool_hitl_resume(
+    pending: dict[str, Any],
+    *,
+    decision: dict[str, Any] | None,
+    user_text: str = "",
+) -> dict[str, Any]:
+    n = len(pending.get("action_requests") or [])
+    if n < 1:
+        n = 1
+    decisions = parse_client_hitl_decision(decision, user_text=user_text, count=n)
+    return {"decisions": decisions}
+
+
+def parse_client_hitl_decision(
+    decision: dict[str, Any] | None,
+    *,
+    user_text: str = "",
+    count: int = 1,
+) -> list[dict[str, Any]]:
+    text = (user_text or "").strip()
+    body = decision if isinstance(decision, dict) else {}
+    dtype = str(body.get("type") or body.get("decision") or "").strip().lower()
+    if not dtype and text in {"确认", "批准", "同意", "ok", "OK"}:
+        dtype = "approve"
+    if not dtype and text:
+        dtype = "respond"
+    if not dtype:
+        dtype = "approve"
+    out: list[dict[str, Any]] = []
+    for _ in range(max(1, count)):
+        if dtype == "approve":
+            out.append({"type": "approve"})
+        elif dtype == "edit":
+            edited = body.get("edited_action")
+            if not isinstance(edited, dict):
+                edited = body.get("edited_args") if isinstance(body.get("edited_args"), dict) else {}
+            name = str(body.get("tool_name") or body.get("name") or edited.get("name") or "")
+            args = edited.get("args") if isinstance(edited.get("args"), dict) else edited
+            if not isinstance(args, dict):
+                args = {}
+            out.append({"type": "edit", "edited_action": {"name": name, "args": args}})
+        elif dtype == "reject":
+            msg = str(body.get("message") or text or "用户已拒绝执行该工具。").strip()
+            out.append({"type": "reject", "message": msg})
+        else:
+            msg = str(body.get("message") or text or "用户补充说明").strip()
+            out.append({"type": "respond", "message": msg})
+    return out
 
 
 def ask_if_needed(
@@ -156,7 +188,6 @@ def ask_if_needed(
     slot_memory: dict[str, list[str]] | None = None,
     has_uploaded_file: bool = False,
 ) -> tuple[str, str] | None:
-    """缺槽则追问。返回 (question, agent_name)，不需要则 None。"""
     major = str(getattr(prep, "intent_major", "") or "")
     text = str(getattr(prep, "resolved_text", "") or getattr(prep, "corrected_text", "") or "")
     mentions = getattr(prep, "mentions", None)

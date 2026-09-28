@@ -1,10 +1,10 @@
-"""评测台：指代补金标。只调 rewrite_coref_query，不跑陪聊 LLM。"""
+"""评测台：指代补金标。走 run_chat_preprocess（与陪聊同一指代链）。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from algorithm.coref_rewrite import rewrite_coref_query
+from algorithm.chat_preprocess import run_chat_preprocess
 
 __all__ = ["COREF_CASES", "run_coref_eval", "run_coref_one"]
 
@@ -100,26 +100,52 @@ COREF_CASES: list[dict[str, Any]] = [
 ]
 
 
+def _run_coref_preprocess(
+    query: str,
+    *,
+    prior: str = "",
+    slot_memory: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    hist = (prior or "").strip()
+    prep = run_chat_preprocess(
+        query,
+        last_user_text=hist,
+        slot_memory=slot_memory or {},
+        prior_user_texts=[hist] if hist else None,
+        defer_intent=True,
+    )
+    coref = dict(prep.coref or {})
+    return {
+        "text": prep.resolved_text or prep.corrected_text or query,
+        "changed": bool(coref.get("changed")),
+        "source": str(coref.get("source") or "none"),
+        "reason": str(coref.get("reason") or ""),
+        "fillers": coref.get("fillers") if isinstance(coref.get("fillers"), dict) else {},
+        "corrected_text": prep.corrected_text,
+        "spell": prep.spell,
+    }
+
+
 def _score_case(case: dict[str, Any]) -> dict[str, Any]:
     prior = str(case.get("prior") or "").strip()
-    out = rewrite_coref_query(
+    out = _run_coref_preprocess(
         str(case.get("query") or ""),
-        last_user_text=prior,
+        prior=prior,
         slot_memory=case.get("slot_memory") if isinstance(case.get("slot_memory"), dict) else {},
-        prior_user_texts=[prior] if prior else None,
     )
     want_changed = bool(case.get("expect_changed"))
-    ok_changed = out.changed is want_changed
-    missing = [item for item in (case.get("contains") or []) if item not in out.text]
-    leaked = [item for item in (case.get("not_contains") or []) if item in out.text]
+    ok_changed = out["changed"] is want_changed
+    text = str(out["text"] or "")
+    missing = [item for item in (case.get("contains") or []) if item not in text]
+    leaked = [item for item in (case.get("not_contains") or []) if item in text]
     want_source = str(case.get("expect_source") or "")
-    ok_source = (not want_source) or out.source == want_source
+    ok_source = (not want_source) or out["source"] == want_source
     ok = ok_changed and ok_source and not missing and not leaked
     fail: list[str] = []
     if not ok_changed:
         fail.append("changed")
     if not ok_source:
-        fail.append("source:" + (out.source or "-"))
+        fail.append("source:" + (out["source"] or "-"))
     if missing:
         fail.append("missing:" + ",".join(missing))
     if leaked:
@@ -133,10 +159,10 @@ def _score_case(case: dict[str, Any]) -> dict[str, Any]:
         "slots": case.get("slot_memory") or {},
         "expect_changed": want_changed,
         "expect_source": want_source or "-",
-        "got_changed": out.changed,
-        "got_source": out.source or "-",
-        "got_text": out.text,
-        "got_reason": out.reason,
+        "got_changed": out["changed"],
+        "got_source": out["source"] or "-",
+        "got_text": text,
+        "got_reason": out["reason"],
         "fail": fail,
     }
 
@@ -162,20 +188,17 @@ def run_coref_one(
     if not text:
         return {"ok": False, "reason": "empty"}
     hist = (prior or "").strip()
-    out = rewrite_coref_query(
-        text,
-        last_user_text=hist,
-        slot_memory=slot_memory or {},
-        prior_user_texts=[hist] if hist else None,
-    )
+    out = _run_coref_preprocess(text, prior=hist, slot_memory=slot_memory or {})
     return {
         "ok": True,
         "query": text,
         "prior": hist,
         "slots": slot_memory or {},
-        "got_changed": out.changed,
-        "got_source": out.source or "-",
-        "got_text": out.text,
-        "got_reason": out.reason,
-        "fillers": out.fillers,
+        "got_changed": out["changed"],
+        "got_source": out["source"] or "-",
+        "got_text": out["text"],
+        "got_reason": out["reason"],
+        "fillers": out["fillers"],
+        "corrected_text": out.get("corrected_text"),
+        "spell": out.get("spell"),
     }

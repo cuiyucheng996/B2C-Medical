@@ -6,18 +6,16 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from algorithm.companion_cypher import list_align_catalogs
 from algorithm.coref_rewrite import rewrite_coref_query
-from algorithm.intent_classify import (
-    CompanionIntentResult,
-    classify_companion_intent,
-    intent_result_to_dict,
-)
+from algorithm.intent_classify import CompanionIntentResult, classify_companion_intents, intent_result_to_dict
 from algorithm.life_lexicons import extract_life_mentions
-from configs.paths_b2c import b2b_src_imports
+from configs.paths_b2c import ensure_uvgraph_root
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +23,7 @@ __all__ = [
     "CompanionPreprocess",
     "finish_preprocess_after_intent",
     "format_preprocess_for_agent",
+    "prep_from_dict",
     "run_chat_preprocess",
 ]
 
@@ -55,9 +54,36 @@ class CompanionPreprocess:
     skip_long_memory: bool = False
     entity_extracted: bool = False
     stage_errors: dict[str, str] = field(default_factory=dict)
+    stage_ms: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def prep_from_dict(row: dict[str, Any], *, fallback: CompanionPreprocess | None = None) -> CompanionPreprocess:
+    base = fallback or CompanionPreprocess(raw_text="", corrected_text="", resolved_text="")
+    return CompanionPreprocess(
+        raw_text=str(row.get("raw_text") or base.raw_text),
+        corrected_text=str(row.get("corrected_text") or base.corrected_text),
+        resolved_text=str(row.get("resolved_text") or base.resolved_text),
+        spell=dict(row.get("spell") or base.spell or {}),
+        coref=dict(row.get("coref") or base.coref or {}),
+        intent=str(row.get("intent") or base.intent),
+        intent_major=str(row.get("intent_major") or base.intent_major),
+        intent_handler=str(row.get("intent_handler") or base.intent_handler),
+        intent_detail=dict(row.get("intent_detail") or base.intent_detail or {}),
+        mentions=row.get("mentions") if isinstance(row.get("mentions"), dict) else dict(base.mentions or {}),
+        negated=list(row.get("negated") or base.negated or []),
+        negation_spans=list(row.get("negation_spans") or base.negation_spans or []),
+        life=dict(row.get("life") or base.life or {}),
+        alignments=list(row.get("alignments") or base.alignments or []),
+        cypher=dict(row.get("cypher") or base.cypher or {}),
+        kg_result=dict(row.get("kg_result") or base.kg_result or {}),
+        skip_long_memory=bool(row.get("skip_long_memory", base.skip_long_memory)),
+        entity_extracted=bool(row.get("entity_extracted", base.entity_extracted)),
+        stage_errors=dict(row.get("stage_errors") or base.stage_errors or {}),
+        stage_ms=dict(row.get("stage_ms") or base.stage_ms or {}),
+    )
 
 
 def run_chat_preprocess(
@@ -98,6 +124,7 @@ def run_chat_preprocess(
             "changed": coref.changed,
             "fillers": coref.fillers,
             "reason": coref.reason,
+            "source": coref.source,
         },
         life=life,
         stage_errors=errors,
@@ -105,7 +132,7 @@ def run_chat_preprocess(
     )
     if defer_intent:
         return prep
-    return finish_preprocess_after_intent(prep, classify_companion_intent(query))
+    return finish_preprocess_after_intent(prep, classify_companion_intents(query))
 
 
 def _as_intent_list(classified: Any) -> list[Any]:
@@ -142,9 +169,14 @@ def finish_preprocess_after_intent(prep: CompanionPreprocess, classified: Any) -
     negated: list[str] = []
     negation_spans: list[str] = []
     alignments: list[dict[str, Any]] = []
+    stage_ms = dict(prep.stage_ms or {})
     if not skip_extract and query:
+        t_cat = time.perf_counter()
         catalogs = list_align_catalogs()
+        stage_ms["catalog_ms"] = int((time.perf_counter() - t_cat) * 1000)
+        t_align = time.perf_counter()
         mentions, negated, negation_spans, alignments = _extract_align(query, catalogs, errors)
+        stage_ms["extract_align_ms"] = int((time.perf_counter() - t_align) * 1000)
     prep.intent = str(getattr(primary, "intent", None) or "未知意图")
     prep.intent_major = str(getattr(primary, "major", None) or "other")
     prep.intent_handler = str(getattr(primary, "handler", None) or "fallback")
@@ -173,39 +205,116 @@ def finish_preprocess_after_intent(prep: CompanionPreprocess, classified: Any) -
     prep.skip_long_memory = skip
     prep.entity_extracted = not skip_extract
     prep.stage_errors = errors
+    prep.stage_ms = stage_ms
     return prep
 
 
 def _spell_correct(text: str, errors: dict[str, str]) -> tuple[str, dict[str, Any]]:
-    """C 端自己的 BERT / 纠错 Agent，不绕 B2B（避免 schema/configs 撞名）。"""
+    """先 DeepSeek 纠错；调用失败再降级 BERT。已写对的医学词不改。"""
+    try:
+        corrected = _deepseek_spell(text)
+        corrected = _keep_known_terms(text, corrected)
+        return corrected, {
+            "changed": corrected != text,
+            "source": "deepseek",
+            "explanation": "DeepSeek 纠错；已有化验名和图谱标准名不改",
+        }
+    except Exception as exc:
+        logger.warning("companion DeepSeek spell failed: %s", exc)
+        errors["spell_deepseek"] = str(exc)
+
     try:
         from runner.Predictor import get_spell_check_bert_predictor
 
         corrected = (get_spell_check_bert_predictor().predict(text) or "").strip() or text
+        corrected = _keep_known_terms(text, corrected)
         return corrected, {
             "changed": corrected != text,
             "source": "bert",
-            "explanation": "C端 BERT 逐字纠错",
+            "explanation": "DeepSeek 不可用，降级 BERT；已有化验名和图谱标准名不改",
         }
     except Exception as exc:
         logger.warning("companion BERT spell failed: %s", exc)
         errors["spell_bert"] = str(exc)
-
-    try:
-        from agent.spell_check_agent import correct_text
-
-        result = correct_text(text, require_high_confidence=True)
-        corrected = (result.corrected_text or "").strip() or text
-        return corrected, {
-            "changed": corrected != text,
-            "source": "agent",
-            "confidence": float(result.confidence),
-            "explanation": result.explanation or "",
-        }
-    except Exception as exc:
-        logger.warning("companion spell agent failed: %s", exc)
-        errors["spell_agent"] = str(exc)
         return text, {"changed": False, "source": "passthrough", "explanation": "纠错不可用，保留原文"}
+
+
+def _deepseek_spell(text: str) -> str:
+    ensure_uvgraph_root()
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from src.llm.chat import get_chat_model
+
+    model = get_chat_model()
+    if model is None:
+        raise RuntimeError("未配置聊天模型")
+    resp = model.invoke(
+        [
+            SystemMessage(
+                content=(
+                    "你只做中文错别字纠正。医学化验名、病名、症状名如果原文已经正确就不要改。"
+                    "只输出纠正后的整句，不要解释。"
+                )
+            ),
+            HumanMessage(content=text),
+        ]
+    )
+    out = str(getattr(resp, "content", "") or "").strip()
+    if not out:
+        raise RuntimeError("DeepSeek 纠错空结果")
+    return out
+
+
+_LAB_TERM_RE = re.compile(
+    r"转氨酶|谷丙转氨酶|谷草转氨酶|肌酐|尿素氮|尿酸|血糖|胆固醇|甘油三酯|"
+    r"血红蛋白|白细胞|红细胞|血小板|血常规|肝功能|肾功能|甲功"
+)
+
+
+def _keep_known_terms(original: str, corrected: str) -> str:
+    """原文里已经写对的化验名、部位、疾病、症状，纠错不得改掉。"""
+    src = original or ""
+    dst = corrected or ""
+    if not src or src == dst:
+        return dst or src
+    terms = _known_terms_in(src)
+    if not terms:
+        return dst
+    if len(src) != len(dst):
+        if any(term not in dst for term in terms):
+            return src
+        return dst
+    chars = list(dst)
+    for term in sorted(terms, key=len, reverse=True):
+        start = 0
+        while True:
+            idx = src.find(term, start)
+            if idx < 0:
+                break
+            chars[idx : idx + len(term)] = list(term)
+            start = idx + len(term)
+    return "".join(chars)
+
+
+def _known_terms_in(text: str) -> list[str]:
+    found = [item.group(0) for item in _LAB_TERM_RE.finditer(text)]
+    try:
+        catalogs = list_align_catalogs()
+    except Exception:
+        logger.debug("spell protect catalogs unavailable", exc_info=True)
+        catalogs = {}
+    keys = {
+        "body_part": "part_name",
+        "disease": "disease_name",
+        "symptom": "symptom_name",
+    }
+    for bucket, field in keys.items():
+        for row in catalogs.get(bucket) or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get(field) or "").strip()
+            if len(name) >= 2 and name in text:
+                found.append(name)
+    return list(dict.fromkeys(found))
 
 
 def _merge_unique(items: list[str]) -> list[str]:
@@ -230,76 +339,77 @@ def _extract_align(
     catalogs: dict[str, list[dict[str, Any]]],
     errors: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str], list[str], list[dict[str, Any]]]:
-    """UIE/否定/对齐必须在 B2B 切栈内执行，避免惰性 import 打到 C 端 algorithm。"""
+    """UIE/否定/对齐走 B2B 桥接缓存，不切换 C 端 algorithm 包。"""
     mentions = {"部位": [], "疾病": [], "症状": []}
     negated: list[str] = []
     negation_spans: list[str] = []
     alignments: list[dict[str, Any]] = []
     try:
-        with b2b_src_imports():
-            from algorithm.entity_align import entity_align
-            from algorithm.negation import drop_negated_mentions, extract_negation_spans
-            from algorithm.uie_extract import extract_entity
-            from schema.entity_synonyms import collect_synonym_spans
+        from algorithm.entity_align_c import entity_align
+        from b2c_b2b_bridge import b2b_entity_synonyms, b2b_negation, b2b_uie_extract
+        drop_negated_mentions = b2b_negation().drop_negated_mentions
+        extract_negation_spans = b2b_negation().extract_negation_spans
+        extract_entity = b2b_uie_extract().extract_entity
+        collect_synonym_spans = b2b_entity_synonyms().collect_synonym_spans
 
-            extracted = extract_entity(text, ["部位", "疾病", "症状"])
-            for key, entity_type in (("部位", "body_part"), ("疾病", "disease"), ("症状", "symptom")):
-                seeded = [alias for alias, _ in collect_synonym_spans(entity_type, text)]
-                mentions[key] = _merge_unique(list(extracted.get(key) or []) + seeded)
+        extracted = extract_entity(text, ["部位", "疾病", "症状"])
+        for key, entity_type in (("部位", "body_part"), ("疾病", "disease"), ("症状", "symptom")):
+            seeded = [alias for alias, _ in collect_synonym_spans(entity_type, text)]
+            mentions[key] = _merge_unique(list(extracted.get(key) or []) + seeded)
 
-            spans = extract_negation_spans(text)
-            negation_spans = [getattr(item, "text", str(item)) for item in (spans or [])]
-            for key in mentions:
-                raw_spans = list(mentions[key])
-                kept = drop_negated_mentions(text, raw_spans)
-                dropped = [item for item in raw_spans if item not in kept]
-                negated.extend(dropped)
-                mentions[key] = kept
+        spans = extract_negation_spans(text)
+        negation_spans = [getattr(item, "text", str(item)) for item in (spans or [])]
+        for key in mentions:
+            raw_spans = list(mentions[key])
+            kept = drop_negated_mentions(text, raw_spans)
+            dropped = [item for item in raw_spans if item not in kept]
+            negated.extend(dropped)
+            mentions[key] = kept
 
-            mentions["部位"] = _trusted_part_mentions(mentions["部位"], mentions["症状"])
-            nlu = {"entity_align": entity_align}
-            for mention in mentions["部位"]:
-                alignments.append(
-                    _align_one(
-                        nlu,
-                        "body_part",
-                        mention,
-                        catalogs["body_part"],
-                        name_key="part_name",
-                        node_label="ConsultBodyPart",
-                        utterance=text,
-                    )
-                )
-            kept_diseases: list[str] = []
-            for mention in mentions["疾病"]:
-                hit = _align_one(
+        mentions["部位"] = _trusted_part_mentions(mentions["部位"], mentions["症状"])
+        nlu = {"entity_align": entity_align}
+        for mention in mentions["部位"]:
+            alignments.append(
+                _align_one(
                     nlu,
-                    "disease",
+                    "body_part",
                     mention,
-                    catalogs["disease"],
-                    name_key="disease_name",
-                    node_label="ConsultDisease",
+                    catalogs["body_part"],
+                    name_key="part_name",
+                    node_label="ConsultBodyPart",
                     utterance=text,
                 )
-                if hit.get("standard_name") and not hit.get("needs_review"):
-                    kept_diseases.append(mention)
-                    alignments.append(hit)
-                else:
-                    mentions["症状"] = _merge_unique(list(mentions["症状"]) + [mention])
-            mentions["疾病"] = kept_diseases
-            for mention in mentions["症状"]:
-                alignments.append(
-                    _align_one(
-                        nlu,
-                        "symptom",
-                        mention,
-                        catalogs["symptom"],
-                        name_key="symptom_name",
-                        node_label="ConsultPrimarySymptom",
-                        utterance=text,
-                        keep_span=True,
-                    )
+            )
+        kept_diseases: list[str] = []
+        for mention in mentions["疾病"]:
+            hit = _align_one(
+                nlu,
+                "disease",
+                mention,
+                catalogs["disease"],
+                name_key="disease_name",
+                node_label="ConsultDisease",
+                utterance=text,
+            )
+            if hit.get("standard_name") and not hit.get("needs_review"):
+                kept_diseases.append(mention)
+                alignments.append(hit)
+            else:
+                mentions["症状"] = _merge_unique(list(mentions["症状"]) + [mention])
+        mentions["疾病"] = kept_diseases
+        for mention in mentions["症状"]:
+            alignments.append(
+                _align_one(
+                    nlu,
+                    "symptom",
+                    mention,
+                    catalogs["symptom"],
+                    name_key="symptom_name",
+                    node_label="ConsultPrimarySymptom",
+                    utterance=text,
+                    keep_span=True,
                 )
+            )
     except Exception as exc:
         logger.exception("companion extract/align failed")
         errors["extract_align"] = str(exc)

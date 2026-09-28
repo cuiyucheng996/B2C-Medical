@@ -30,7 +30,7 @@ from tools.companion_tools import (
     query_consult_graph,
     safety_policy_hint,
     search_exam_handbook,
-    search_milvus_knowledge,
+    search_chroma_knowledge,
 )
 
 mcp = FastMCP("b2c-companion")
@@ -78,11 +78,11 @@ def b2c_search_exam_handbook(query: str = "", handler: str = "", user_id: str = 
 
 
 @mcp.tool()
-def b2c_search_milvus_knowledge(query: str = "", user_id: str = "") -> str:
-    """只查 Milvus 疾病/症状向量。"""
+def b2c_search_chroma_knowledge(query: str = "", user_id: str = "") -> str:
+    """只查 Chroma 疾病/症状向量。"""
     group_tok, turn_tok = _bind_user(user_id, query=query)
     try:
-        return search_milvus_knowledge.invoke({"query": query})
+        return search_chroma_knowledge.invoke({"query": query})
     finally:
         _reset(group_tok, turn_tok)
 
