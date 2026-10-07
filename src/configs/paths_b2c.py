@@ -1,4 +1,4 @@
-"""B2C 路径：本目录 src + uvgraph 根。"""
+"""B2C 路径：本目录 src + 内嵌 vendor/uvgraph（`import src`），不再依赖上级 uvgraph 根。"""
 
 from __future__ import annotations
 
@@ -10,23 +10,30 @@ from pathlib import Path
 
 B2C_ROOT = Path(__file__).resolve().parents[2]
 B2C_SRC = B2C_ROOT / "src"
-UVGRAPH_ROOT = B2C_ROOT.parent
+VENDOR_UVGRAPH = B2C_ROOT / "vendor" / "uvgraph"
+# 兼容旧脚本命名
+UVGRAPH_ROOT = VENDOR_UVGRAPH
+
+
+def ensure_b2c_runtime_path() -> Path:
+    """B2C src 在前（algorithm/agent）；vendor 在后供 `import src.*`。"""
+    vendor = str(VENDOR_UVGRAPH)
+    local = str(B2C_SRC)
+    for item in (vendor, local):
+        if item in sys.path:
+            sys.path.remove(item)
+    sys.path.insert(0, local)
+    sys.path.insert(1, vendor)
+    return B2C_ROOT
 
 
 def ensure_uvgraph_root() -> Path:
-    """`src.*` 必须指向 uvgraph 根下的包，不能被 B2C 自己的 src 目录抢先。"""
-    root = str(UVGRAPH_ROOT)
-    local = str(B2C_SRC)
-    for item in (root, local):
-        if item in sys.path:
-            sys.path.remove(item)
-    sys.path.insert(0, root)
-    sys.path.insert(1, local)
-    return UVGRAPH_ROOT
+    """兼容旧调用：等价于 ensure_b2c_runtime_path。"""
+    return ensure_b2c_runtime_path()
 
 
 def ensure_b2c_src() -> Path:
-    ensure_uvgraph_root()
+    ensure_b2c_runtime_path()
     return B2C_SRC
 
 
@@ -46,7 +53,7 @@ def _clear_algorithm_modules() -> None:
 
 def import_b2c_algorithm(name: str):
     """C 端 algorithm 子模块。"""
-    ensure_uvgraph_root()
+    ensure_b2c_runtime_path()
     if not _algorithm_is_b2c():
         _clear_algorithm_modules()
     return importlib.import_module(f"algorithm.{name}")

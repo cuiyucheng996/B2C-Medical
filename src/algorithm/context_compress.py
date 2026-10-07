@@ -7,7 +7,28 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from src.langchain.agent.loop.compress import KEEP_USER_TURNS, _shrink_recent, _summarize_old, _text
+
+def _uvgraph_loop_compress():
+    """只加载 compress.py，避免 import loop 包时拉起 agent_loop / tools 链。"""
+    import importlib.util
+
+    from configs.paths_b2c import VENDOR_UVGRAPH, ensure_b2c_runtime_path
+
+    ensure_b2c_runtime_path()
+    path = VENDOR_UVGRAPH / "src" / "langchain" / "agent" / "loop" / "compress.py"
+    spec = importlib.util.spec_from_file_location("_uvgraph_loop_compress", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load compress from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_compress = _uvgraph_loop_compress()
+KEEP_USER_TURNS = _compress.KEEP_USER_TURNS
+_shrink_recent = _compress._shrink_recent
+_summarize_old = _compress._summarize_old
+_text = _compress._text
 
 logger = logging.getLogger(__name__)
 

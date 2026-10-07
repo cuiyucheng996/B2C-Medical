@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal
 
 from langgraph.graph import END, START, StateGraph
 
-from graph.review import review_companion_draft
+from graph.review import companion_should_review_draft, review_companion_draft
 from graph.state import IntentWorkerState
 from middleware.middleware_trace import take_middleware_trace
 from middleware.tool_trace import take_tool_trace
@@ -126,11 +126,20 @@ async def execute_node(state: IntentWorkerState) -> dict[str, Any]:
         ]
     )
     id_tok = runtime_stream_worker_id.set(wid)
+    from algorithm.memory_collect import history_for_intent_worker
+
+    base_turn = dict(state.get("base_turn") or {})
+    worker_history = history_for_intent_worker(
+        list(state.get("history") or []),
+        handler=handler,
+        major=str(task.get("major") or ""),
+        user_id=str(base_turn.get("user_id") or ""),
+    )
     try:
         reply, facts, tool_trace = await _ainvoke_companion_agent(
             model,
             tools,
-            list(state.get("history") or []),
+            worker_history,
             observe,
             turn,
             task,
@@ -159,6 +168,14 @@ async def review_node(state: IntentWorkerState) -> dict[str, Any]:
     from algorithm.llm_trace import run_in_llm_trace_context
 
     task = _task_row(state)
+    major = str(task.get("major") or "")
+    handler = str(task.get("handler") or "")
+    if not companion_should_review_draft(major, handler):
+        return {
+            "review_pass": True,
+            "review_reason": "",
+            "review_hint": "",
+        }
 
     def _run() -> dict[str, Any]:
         return review_companion_draft(

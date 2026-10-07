@@ -12,9 +12,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_WORKER_MEMORY_SUMMARY_CHARS = 300
+
+MEMORY_COLLECT_PREFIX = "【长期记忆的收集】"
+
+# 仅子 Agent 按需注入长期记忆摘要（不从会话 history 复用进场大树）
+_WORKER_MEMORY_HANDLERS = frozenset({"status_complaint", "mem_session_recall"})
+
 __all__ = [
+    "MEMORY_COLLECT_PREFIX",
     "compose_memory_collect",
+    "history_for_intent_worker",
     "rank_syndrome_candidates",
+    "shrink_memory_collect_text",
+    "strip_memory_collect_messages",
 ]
 
 _MAX_CANDIDATES = 3
@@ -37,6 +48,74 @@ def compose_memory_collect(user_id: str) -> str:
             "这不是诊断。"
         )
     return f"【长期记忆的收集】\n{body}\n这不是诊断，只是根据已记下的实体和图谱条目做的归纳。"
+
+
+def shrink_memory_collect_text(text: str, max_chars: int = _WORKER_MEMORY_SUMMARY_CHARS) -> str:
+    """进场长期记忆树压成短摘要，供子 Agent 上下文。"""
+    raw = (text or "").strip()
+    if not raw.startswith(MEMORY_COLLECT_PREFIX):
+        return raw[:max_chars] if max_chars > 0 and len(raw) > max_chars else raw
+    limit = max(80, int(max_chars))
+    body = raw[len(MEMORY_COLLECT_PREFIX) :].strip()
+    tail = "这不是诊断，只是根据已记下的实体和图谱条目做的归纳。"
+    if body.endswith(tail):
+        body = body[: -len(tail)].strip()
+    one_line = " ".join(line.strip() for line in body.splitlines() if line.strip())
+    if len(one_line) <= limit:
+        short_body = one_line
+    else:
+        short_body = one_line[: limit - 1].rstrip() + "…"
+    return f"{MEMORY_COLLECT_PREFIX}\n{short_body}\n（摘要已截断，非诊断。）"
+
+
+def _message_text(msg: Any) -> str:
+    content = getattr(msg, "content", "") or ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
+def strip_memory_collect_messages(history: list[Any]) -> list[Any]:
+    """意图、语义缓存、主图 history 等均不应带进场长期记忆树。"""
+    out: list[Any] = []
+    for msg in history or []:
+        if _message_text(msg).startswith(MEMORY_COLLECT_PREFIX):
+            continue
+        out.append(msg)
+    return out
+
+
+def history_for_intent_worker(
+    history: list[Any],
+    *,
+    handler: str = "",
+    major: str = "",
+    user_id: str = "",
+) -> list[Any]:
+    """子 Agent：剥离会话中的进场树；仅特定 handler 用 compose 注入短摘要。"""
+    del major
+    from langchain_core.messages import AIMessage
+
+    out = strip_memory_collect_messages(history)
+    h = (handler or "").strip()
+    uid = (user_id or "").strip()
+    if h not in _WORKER_MEMORY_HANDLERS or not uid:
+        return out
+    block = compose_memory_collect(uid)
+    if not block.strip():
+        return out
+    short = shrink_memory_collect_text(block, _WORKER_MEMORY_SUMMARY_CHARS)
+    if short:
+        out.insert(0, AIMessage(content=short))
+    return out
 
 
 def rank_syndrome_candidates(

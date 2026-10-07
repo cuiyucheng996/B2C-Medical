@@ -18,6 +18,8 @@ web-frontend/node_modules/
 
 # Python
 .venv/
+.cache/
+vendor/**/.cache/
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -7,7 +7,7 @@ from typing import Any
 from algorithm.kb_eval_display import format_query_plan, ms_to_sec_text, numbered_lines
 from algorithm.rag.config import get_rag_config, is_rag_enhanced
 
-__all__ = ["build_kb_eval_flow", "format_companion_rag_block"]
+__all__ = ["build_kb_eval_flow", "companion_rag_sections", "format_companion_rag_block"]
 
 
 def _step(no: str, title: str, detail: str) -> dict[str, str]:
@@ -207,14 +207,15 @@ def build_kb_eval_flow(
     ]
 
 
-def format_companion_rag_block(packed: dict[str, Any], *, tool: str = "", query_text: str = "") -> str:
-    """陪聊调试：与评测台第三块同一套 3.1–3.8 文案。"""
+def companion_rag_sections(packed: dict[str, Any], *, tool: str = "", query_text: str = "") -> list[dict[str, str]]:
+    """陪聊调试：结构化步骤（与流式 RAG 区块一致，可折叠展示）。"""
     rag = packed.get("rag") if isinstance(packed.get("rag"), dict) else {}
     seeds = [str(s).strip() for s in (packed.get("seeds") or []) if str(s).strip()]
     q = (query_text or str(rag.get("main_query") or "")).strip()
     cfg = get_rag_config()
     queries = [str(item).strip() for item in (rag.get("queries") or []) if str(item).strip()]
     main_q = str(rag.get("main_query") or rag.get("cache_key") or q)
+    sections: list[dict[str, str]] = []
     if rag.get("enhanced"):
         plan = format_query_plan(
             seeds=seeds,
@@ -225,16 +226,18 @@ def format_companion_rag_block(packed: dict[str, Any], *, tool: str = "", query_
             max_queries=cfg.max_queries,
         )
         steps = [
-            ("3.1", "seeds + 主查询 + 待检索句", plan),
-            ("3.2", "可选缓存", str(rag.get("cache_detail") or "-")),
-            ("3.3", "多查询扩展（规则，无 LLM）", numbered_lines(queries) if queries else str(rag.get("query_expand_detail") or "-")),
-            ("3.4", "多路召回", str(rag.get("recall_detail") or "-")),
-            ("3.5", "RRF 融合", str(rag.get("rrf_detail") or "-")),
-            ("3.6", "关键词重排", str(rag.get("rerank_detail") or "-")),
-            ("3.7", "top_k 写回", str(rag.get("output_detail") or "-")),
+            ("3.1 seeds + 主查询 + 待检索句", plan),
+            ("3.2 可选缓存", str(rag.get("cache_detail") or "-")),
             (
-                "3.8",
-                "pack.rag 元数据",
+                "3.3 多查询扩展（规则，无 LLM）",
+                numbered_lines(queries) if queries else str(rag.get("query_expand_detail") or "-"),
+            ),
+            ("3.4 多路召回", str(rag.get("recall_detail") or "-")),
+            ("3.5 RRF 融合", str(rag.get("rrf_detail") or "-")),
+            ("3.6 关键词重排", str(rag.get("rerank_detail") or "-")),
+            ("3.7 top_k 写回", str(rag.get("output_detail") or "-")),
+            (
+                "3.8 pack.rag 元数据",
                 f"channel={rag.get('channel')}；note={rag.get('note')}；"
                 f"管线 {ms_to_sec_text((rag.get('timing_ms') or {}).get('pipeline_ms'))}\n"
                 + ("待检索句：\n" + numbered_lines(queries, empty="（无）")),
@@ -243,17 +246,26 @@ def format_companion_rag_block(packed: dict[str, Any], *, tool: str = "", query_
     else:
         source = str(packed.get("source") or "")
         steps = [
-            ("3.1", "基线召回", f"source={source or '-'}；未走增强管线（无 expand / RRF）。"),
-            ("3.2", "seeds", numbered_lines(seeds)),
+            ("3.1 基线召回", f"source={source or '-'}；未走增强管线（无 expand / RRF）。"),
+            ("3.2 seeds", numbered_lines(seeds)),
         ]
+    for title, detail in steps:
+        sections.append({"title": title, "body": detail or "-"})
     hits = rag.get("hits") if isinstance(rag.get("hits"), list) else []
     snippets = [str(row.get("text") or "").strip() for row in hits if isinstance(row, dict) and str(row.get("text") or "").strip()]
     if not snippets:
         snippets = [str(item).strip() for item in (packed.get("items") or []) if str(item).strip()]
-    lines = [f"工具 {tool}".strip(), "RAG 增强 / 工具召回"]
-    for no, title, detail in steps:
-        lines.append(f"{no} {title}")
-        lines.append(detail or "-")
-    lines.append("知识片段")
-    lines.append(numbered_lines(snippets[:8], empty="（无片段）"))
+    sections.append({"title": "知识片段", "body": numbered_lines(snippets[:8], empty="（无片段）")})
+    if tool:
+        sections.insert(0, {"title": "工具", "body": tool})
+    return sections
+
+
+def format_companion_rag_block(packed: dict[str, Any], *, tool: str = "", query_text: str = "") -> str:
+    """陪聊调试：与评测台第三块同一套 3.1–3.8 文案。"""
+    sections = companion_rag_sections(packed, tool=tool, query_text=query_text)
+    lines = ["RAG 增强 / 工具召回"]
+    for sec in sections:
+        lines.append(str(sec.get("title") or ""))
+        lines.append(str(sec.get("body") or "-"))
     return "\n".join(lines)

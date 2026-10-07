@@ -111,6 +111,9 @@ class FileIngest:
     user_id: str = ""
     chunks: list[dict[str, Any]] = field(default_factory=list)
     mineru_pdf_path: str = ""
+    content_sha256: str = ""
+    mineru_cache_key: str = ""
+    structured_tables: list[dict[str, Any]] = field(default_factory=list)
     score_card: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +135,9 @@ class FileIngest:
             "chunk_count": len(self.chunks),
             "chunks": [_preview_chunk(item) for item in self.chunks[:80]],
             "mineru_pdf_path": self.mineru_pdf_path,
+            "content_sha256": self.content_sha256,
+            "mineru_cache_key": self.mineru_cache_key,
+            "structured_tables": [dict(item) for item in self.structured_tables[:8]],
             "score_card": dict(self.score_card or {}),
             "markdown_preview": (self.markdown or "")[:800],
             "user_text": (self.user_text or "")[:2500],
@@ -143,6 +149,27 @@ class FileIngest:
         row.pop("role", None)
         row.pop("reasons", None)
         return row
+
+
+def _hydrate_mineru_from_memory(ingest: FileIngest) -> FileIngest:
+    """同内容再次上传：只读进程内 MinerU 缓存，不跑 GPU。"""
+    sha = (ingest.content_sha256 or "").strip()
+    if not sha:
+        return ingest
+    from algorithm.mineru_mem_cache import mineru_payload_from_mem
+
+    hit = mineru_payload_from_mem(sha)
+    if hit is None:
+        return ingest
+    structured, indicators, source = hit
+    ingest.structured_tables = list(structured or [])
+    if indicators:
+        ingest.indicators = list(indicators)
+    if source:
+        ingest.parse_source = source
+    if ingest.structured_tables and not ingest.table_count:
+        ingest.table_count = len(ingest.structured_tables)
+    return ingest
 
 
 def _preview_chunk(item: dict[str, Any]) -> dict[str, Any]:
@@ -193,7 +220,7 @@ def score_upload_role(
     layout_pending: bool = False,
     lab_threshold: int = 2,
 ) -> dict[str, Any]:
-    """上传打分：表 +2、指标≥3 +2、化验词 +1、版面未拆开 +1；≥阈值分为报告解读。"""
+    """上传打分：表 +2、指标≥3 +2、化验词 +1、版面未拆开 +1；总分 ≥ 阈值（默认 2）才标 lab_report。"""
     points: list[dict[str, Any]] = []
     reasons: list[str] = []
     score = 0
@@ -226,7 +253,7 @@ def score_upload_role(
         reasons.append("待抽表原件")
     else:
         points.append({"name": "版面待抽表", "delta": 0, "hit": False, "detail": "已拆开或未走版面"})
-    thresh = max(1, int(lab_threshold or 2))
+    thresh = max(2, int(lab_threshold if lab_threshold is not None else 2))
     lab = score >= thresh
     if lab:
         role: FileRole = "lab_report"
@@ -289,6 +316,9 @@ def ingest_user_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid4().hex}_{name}"
     dest.write_bytes(data)
+    from algorithm.mineru_mem_cache import file_content_sha256
+
+    content_sha256 = file_content_sha256(data)
 
     suffix = Path(name).suffix.lower()
     scan = family == "image" or suffix == ".pdf"
@@ -381,7 +411,7 @@ def ingest_user_file(
         card = dict(card)
         card["role"] = role
         card["overridden"] = "layout_picture"
-    return FileIngest(
+    bundle = FileIngest(
         filename=name,
         saved_path=saved_path,
         family=family,
@@ -400,8 +430,10 @@ def ingest_user_file(
         user_id=uid,
         chunks=chunks,
         mineru_pdf_path=mineru_pdf_path,
+        content_sha256=content_sha256,
         score_card=card,
     )
+    return _hydrate_mineru_from_memory(bundle)
 
 
 def parse_user_file(*, saved_path: str, filename: str = "", family: str = "", user_id: str = "") -> FileIngest:
@@ -411,6 +443,9 @@ def parse_user_file(*, saved_path: str, filename: str = "", family: str = "", us
         raise ValueError("原件不存在或已过期")
     name = Path(filename or dest.name).name
     data = dest.read_bytes()
+    from algorithm.mineru_mem_cache import file_content_sha256
+
+    content_sha = file_content_sha256(data)
     fam: FileFamily = "image" if family == "image" else "document"
     if not family:
         fam = classify_file_family(name, data)
@@ -486,7 +521,7 @@ def parse_user_file(*, saved_path: str, filename: str = "", family: str = "", us
     mineru_pdf = ""
     if role == "lab_report":
         mineru_pdf = _ensure_report_pdf(dest=dest, probe=parse_path)
-    return FileIngest(
+    bundle = FileIngest(
         filename=name,
         saved_path=str(dest),
         family=fam,
@@ -503,7 +538,9 @@ def parse_user_file(*, saved_path: str, filename: str = "", family: str = "", us
         user_id=uid,
         chunks=chunks,
         mineru_pdf_path=mineru_pdf,
+        content_sha256=content_sha,
     )
+    return _hydrate_mineru_from_memory(bundle)
 
 
 def intent_for_file_role(role: str) -> dict[str, str] | None:

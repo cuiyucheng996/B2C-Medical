@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-B2C_SRC = Path(__file__).resolve().parents[1]
-UVGRAPH_ROOT = B2C_SRC.parent.parent
-for item in (str(UVGRAPH_ROOT), str(B2C_SRC)):
-    if item not in sys.path:
-        sys.path.insert(0, item)
+import companion_mcp._bootstrap  # noqa: F401
 
 from mcp.server.fastmcp import FastMCP
 

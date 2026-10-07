@@ -1,8 +1,8 @@
 """启动 B2C 陪聊 API（Graphiti 形态：session + agent + ingest/search）。
 
-用法（项目根目录）：
-    uv run python "B2C business/run.py"
-    uv run python "B2C business/run.py" --port 8002
+用法（本目录为项目根）：
+    uv run python run.py
+    uv run python run.py --port 8002
 """
 
 from __future__ import annotations
@@ -17,16 +17,14 @@ os.environ.setdefault("VECTOR_STORE_BACKEND", "chroma")
 import uvicorn
 
 B2C_ROOT = Path(__file__).resolve().parent
-UVGRAPH_ROOT = B2C_ROOT.parent
 B2C_SRC = B2C_ROOT / "src"
 
-# uvgraph 根在前：`import src` 走主项目；B2C src 在后：`agent` / `session` / `api`
-if str(UVGRAPH_ROOT) in sys.path:
-    sys.path.remove(str(UVGRAPH_ROOT))
-if str(B2C_SRC) in sys.path:
-    sys.path.remove(str(B2C_SRC))
-sys.path.insert(0, str(UVGRAPH_ROOT))
-sys.path.insert(1, str(B2C_SRC))
+if str(B2C_SRC) not in sys.path:
+    sys.path.insert(0, str(B2C_SRC))
+
+from configs.paths_b2c import ensure_b2c_runtime_path
+
+ensure_b2c_runtime_path()
 
 
 def main() -> None:

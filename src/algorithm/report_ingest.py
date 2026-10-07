@@ -132,6 +132,13 @@ def _extract_markdown(path: Path):
     return mod.extract_pdf_markdown(path, try_mineru=False)
 
 
+def mineru_file_cache_key(path: Path) -> str:
+    """同一 PDF 文件未变则复用 last_file 里的 MinerU 拆表结果。"""
+    p = Path(path)
+    st = p.stat()
+    return f"{p.resolve()}:{st.st_mtime_ns}:{st.st_size}"
+
+
 def mineru_split_tables(path: Path) -> tuple[list[dict], list[dict[str, str]], str]:
     """只拆表：MinerU → 结构化 JSON + 指标行。不再跑 YOLOX。"""
     mod = _pdf_extract_module()
@@ -140,6 +147,45 @@ def mineru_split_tables(path: Path) -> tuple[list[dict], list[dict[str, str]], s
     structured = [mod.table_to_json(item) for item in blobs]
     indicators = _extract_indicators(blobs, "")
     return structured, indicators, "mineru_table" if blobs else ""
+
+
+def mineru_split_tables_cached(
+    path: Path,
+    row: dict[str, Any] | None,
+) -> tuple[list[dict], list[dict[str, str]], str]:
+    """先进程内按 content_sha256 命中；再 last_file 同行；否则 MinerU 并写入内存。"""
+    from algorithm.mineru_mem_cache import mineru_payload_from_mem, put_mineru_mem
+
+    cached = row if isinstance(row, dict) else {}
+    content_sha = str(cached.get("content_sha256") or "").strip()
+    if content_sha:
+        hit = mineru_payload_from_mem(content_sha)
+        if hit is not None:
+            return hit
+
+    p = Path(path)
+    key = mineru_file_cache_key(p)
+    pdf_hint = str(cached.get("mineru_pdf_path") or cached.get("saved_path") or "")
+    if (
+        cached.get("mineru_cache_key") == key
+        and pdf_hint
+        and Path(pdf_hint).resolve() == p.resolve()
+        and (cached.get("structured_tables") or cached.get("indicators"))
+    ):
+        tables = list(cached.get("structured_tables") or [])
+        indicators = [dict(item) for item in (cached.get("indicators") or []) if isinstance(item, dict)]
+        source = str(cached.get("parse_source") or ("mineru_table" if tables else ""))
+        return tables, indicators, source
+
+    tables, indicators, source = mineru_split_tables(p)
+    if content_sha and (tables or indicators):
+        put_mineru_mem(
+            content_sha,
+            structured_tables=tables,
+            indicators=indicators,
+            parse_source=source,
+        )
+    return tables, indicators, source
 
 
 def _detect_layout(path: Path, *, layout_only: bool = True) -> dict[str, Any]:

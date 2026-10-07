@@ -37,7 +37,7 @@ def run_file_eval(
         filename=name,
         data=data,
         layout_only=bool(gate_layout_only) if mode == "gate" else True,
-        lab_threshold=max(1, int(gate_lab_threshold or 2)),
+        lab_threshold=max(2, int(gate_lab_threshold or 2)),
     )
     card = dict(ingested.score_card or {})
     if not card:
@@ -115,7 +115,7 @@ def run_file_eval(
     gate_options: dict[str, Any] = {}
     if mode == "gate":
         gate_options = {
-            "lab_threshold": max(1, int(gate_lab_threshold or 2)),
+            "lab_threshold": max(2, int(gate_lab_threshold or 2)),
             "run_explain": bool(gate_run_explain),
             "layout_only": bool(gate_layout_only),
             "strategy": "hi_res",

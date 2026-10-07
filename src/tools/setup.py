@@ -30,6 +30,7 @@ INTENT_BIND: dict[tuple[str, str], tuple[str, ...]] = {
     ("公共知识问答", "kg_exam_meaning"): _HANDBOOK_THEN_CHROMA,
     ("公共知识问答", "kg_lab_range"): _HANDBOOK_THEN_CHROMA,
     ("公共知识问答", "kg_symptom_care"): _HANDBOOK,
+    ("公共知识问答", "kg_handbook_general"): _HANDBOOK_THEN_CHROMA,
     ("公共知识问答", ""): KNOWLEDGE_TOOLKIT.names(),
     ("个人记忆问答", "mem_stated_consult"): MEMORY_TOOLKIT.pick("lookup_stated_consult"),
     ("个人记忆问答", "mem_companion_fact"): MEMORY_TOOLKIT.pick("lookup_life_facts"),

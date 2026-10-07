@@ -12,11 +12,15 @@ from algorithm.ragflow_kb import retrieve_chunks
 
 logger = logging.getLogger(__name__)
 
+_AGENT_HANDBOOK_ITEMS = 2
+_AGENT_HANDBOOK_ITEM_CHARS = 300
+
 __all__ = [
     "fulfill_kg_intent",
     "query_consult_graph",
     "search_exam_handbook",
     "search_chroma_knowledge",
+    "slim_handbook_pack_for_agent",
 ]
 
 _QUESTION_TAIL = (
@@ -218,6 +222,33 @@ def _pack(
             if isinstance(item, dict)
         ],
     }
+
+
+def slim_handbook_pack_for_agent(pack: dict[str, Any]) -> dict[str, Any]:
+    """工具回执进 Agent 前裁剪：summary + 至多 2 条短摘录，去掉 rag/alignments/seeds 等。"""
+    if not isinstance(pack, dict):
+        return {"summary": "", "items": []}
+    summary = str(pack.get("summary") or "").strip()
+    if len(summary) > 400:
+        summary = summary[:399].rstrip() + "…"
+    items: list[str] = []
+    for row in list(pack.get("items") or []):
+        text = str(row if isinstance(row, str) else (row.get("text") if isinstance(row, dict) else row) or "").strip()
+        if not text:
+            continue
+        if len(text) > _AGENT_HANDBOOK_ITEM_CHARS:
+            text = text[: _AGENT_HANDBOOK_ITEM_CHARS - 1].rstrip() + "…"
+        items.append(text)
+        if len(items) >= _AGENT_HANDBOOK_ITEMS:
+            break
+    out: dict[str, Any] = {"summary": summary, "items": items}
+    handler = str(pack.get("handler") or "").strip()
+    source = str(pack.get("source") or "").strip()
+    if handler:
+        out["handler"] = handler[:64]
+    if source:
+        out["source"] = source[:32]
+    return out
 
 
 def _resolve_seeds(

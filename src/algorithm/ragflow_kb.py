@@ -18,6 +18,8 @@ from algorithm.pdf_kb import ingest_local_pdf, list_local_documents, retrieve_lo
 
 logger = logging.getLogger(__name__)
 
+_remote_cooldown_until: float = 0.0
+
 __all__ = [
     "ensure_dataset",
     "kb_status",
@@ -122,11 +124,25 @@ def retrieve_chunks(question: str, *, top_k: int = 6) -> list[str]:
     return [str(row.get("text") or "") for row in retrieve_hits(question, top_k=top_k) if row.get("text")]
 
 
+def _use_remote_retrieval() -> bool:
+    cfg = _cfg()
+    raw = cfg.get("remote_retrieval")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def retrieve_hits(question: str, *, top_k: int = 6) -> list[dict[str, Any]]:
-    """召回带分：优先 RAGFlow 返回序，失败走本地词频。"""
+    """召回带分：默认本地手册分块；remote_retrieval 开启时再调 RAGFlow。"""
     text = (question or "").strip()
     if not text:
         return []
+    if not _use_remote_retrieval():
+        return retrieve_local_hits(text, top_k=top_k)
+    if _remote_retrieval_blocked():
+        return retrieve_local_hits(text, top_k=top_k)
     if ping_ragflow().get("ok"):
         remote = _retrieve_remote_hits(text, top_k=top_k)
         if remote:
@@ -138,10 +154,30 @@ def _retrieve_remote(text: str, *, top_k: int) -> list[str]:
     return [str(row.get("text") or "") for row in _retrieve_remote_hits(text, top_k=top_k)]
 
 
+def _remote_retrieval_blocked() -> bool:
+    return time.time() < _remote_cooldown_until
+
+
+def _mark_remote_retrieval_failed(exc: BaseException) -> None:
+    global _remote_cooldown_until
+    cfg = _cfg()
+    cooldown = float(cfg.get("retrieval_fail_cooldown_seconds") or 120)
+    _remote_cooldown_until = time.time() + max(30.0, cooldown)
+    logger.warning(
+        "ragflow retrieval 失败，%.0fs 内改走本地手册分块: %s",
+        cooldown,
+        exc,
+    )
+
+
 def _retrieve_remote_hits(text: str, *, top_k: int) -> list[dict[str, Any]]:
+    if _remote_retrieval_blocked():
+        return []
     try:
         dataset = ensure_dataset()
         dataset_id = str(dataset.get("id") or "")
+        cfg = _cfg()
+        retrieval_timeout = float(cfg.get("retrieval_timeout_seconds") or 10)
         payload = _request(
             "POST",
             "/api/v1/retrieval",
@@ -154,10 +190,10 @@ def _retrieve_remote_hits(text: str, *, top_k: int) -> list[dict[str, Any]]:
                 "vector_similarity_weight": 0.3,
                 "keyword": True,
             },
-            timeout=20,
+            timeout=retrieval_timeout,
         )
-    except Exception:
-        logger.warning("ragflow retrieve failed", exc_info=True)
+    except Exception as exc:
+        _mark_remote_retrieval_failed(exc)
         return []
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     raw_chunks = data.get("chunks") if isinstance(data, dict) else []
@@ -371,12 +407,15 @@ def _cfg() -> dict[str, Any]:
 
     settings = get_app_settings()
     return {
-        "base_url": str(RAGFLOW_CONFIG.get("base_url") or "http://127.0.0.1:9380").rstrip("/"),
+        "base_url": str(RAGFLOW_CONFIG.get("base_url") or "http://127.0.0.1:8088").rstrip("/"),
         "web_url": str(RAGFLOW_CONFIG.get("web_url") or "http://127.0.0.1:8088").rstrip("/"),
         "dataset_name": RAGFLOW_CONFIG.get("dataset_name") or "b2c_exam_handbook",
         "dataset_id": RAGFLOW_CONFIG.get("dataset_id") or "",
         "chunk_method": RAGFLOW_CONFIG.get("chunk_method") or "naive",
         "timeout": float(RAGFLOW_CONFIG.get("timeout_seconds") or 180),
+        "retrieval_timeout_seconds": float(RAGFLOW_CONFIG.get("retrieval_timeout_seconds") or 10),
+        "retrieval_fail_cooldown_seconds": float(RAGFLOW_CONFIG.get("retrieval_fail_cooldown_seconds") or 120),
+        "remote_retrieval": RAGFLOW_CONFIG.get("remote_retrieval"),
         "api_key": (settings.ragflow_api_key or "").strip(),
     }
 

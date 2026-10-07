@@ -9,6 +9,8 @@ from typing import Any
 from configs.paths_b2c import ensure_uvgraph_root
 
 __all__ = [
+    "CheckpointVersionStreamer",
+    "ainvoke_graph_emitting_checkpoints",
     "build_round_checkpoint_debug",
     "list_checkpoint_versions",
     "snapshot_companion_checkpoint_debug",
@@ -48,6 +50,81 @@ def _describe_saver(saver: Any, *, env_hint: str) -> dict[str, Any]:
         except Exception:
             pass
     return row
+
+
+def _message_snapshot(msg: Any, *, limit: int = 1000) -> Any:
+    if msg is None:
+        return None
+    role = getattr(msg, "type", None) or getattr(msg, "role", None)
+    content = getattr(msg, "content", None)
+    if content is None and isinstance(msg, dict):
+        role = msg.get("type") or msg.get("role")
+        content = msg.get("content")
+    if isinstance(content, list):
+        try:
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        except TypeError:
+            content = str(content)
+    text = str(content or "")
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    row: dict[str, Any] = {}
+    if role:
+        row["role"] = str(role)
+    if text:
+        row["content"] = text
+    name = getattr(msg, "name", None) if not isinstance(msg, dict) else msg.get("name")
+    if name:
+        row["name"] = str(name)
+    tool_calls = getattr(msg, "tool_calls", None) if not isinstance(msg, dict) else msg.get("tool_calls")
+    if tool_calls:
+        try:
+            row["tool_calls"] = json.loads(json.dumps(tool_calls, ensure_ascii=False, default=str))
+        except TypeError:
+            row["tool_calls"] = str(tool_calls)[:limit]
+    if isinstance(msg, dict) and not row:
+        return {k: _json_preview(v, limit=limit) for k, v in list(msg.items())[:24]}
+    return row or str(msg)[:limit]
+
+
+def _snapshot_value(key: str, val: Any, *, list_item_limit: int = 12) -> Any:
+    if val is None:
+        return None
+    if key == "history" and isinstance(val, list):
+        return [_message_snapshot(item) for item in val[:list_item_limit]] + (
+            [f"…共 {len(val)} 条，仅展示前 {list_item_limit} 条"] if len(val) > list_item_limit else []
+        )
+    if key in {"worker_outputs", "facts", "tasks", "wave1_outputs"} and isinstance(val, list):
+        try:
+            packed = json.loads(json.dumps(val[:list_item_limit], ensure_ascii=False, default=str))
+        except TypeError:
+            packed = [str(item)[:800] for item in val[:list_item_limit]]
+        if len(val) > list_item_limit:
+            packed.append({"_truncated": f"共 {len(val)} 条"})
+        return packed
+    if key == "messages" and isinstance(val, list):
+        return [_message_snapshot(item) for item in val[:list_item_limit]]
+    if isinstance(val, (str, int, float, bool)):
+        s = str(val)
+        return s[:2400] + ("…" if len(s) > 2400 else "")
+    if isinstance(val, dict):
+        try:
+            return json.loads(json.dumps(val, ensure_ascii=False, default=str))
+        except TypeError:
+            return _json_preview(val, limit=2400)
+    if isinstance(val, list):
+        try:
+            return json.loads(json.dumps(val[:list_item_limit], ensure_ascii=False, default=str))
+        except TypeError:
+            return [str(item)[:400] for item in val[:list_item_limit]]
+    return _json_preview(val, limit=1200)
+
+
+def _channel_values_snapshot(values: dict[str, Any] | None) -> dict[str, Any]:
+    snap: dict[str, Any] = {}
+    for key, val in dict(values or {}).items():
+        snap[key] = _snapshot_value(str(key), val)
+    return snap
 
 
 def _preview_channel_values(values: dict[str, Any] | None) -> dict[str, Any]:
@@ -121,6 +198,98 @@ def _node_hint(
     return "（节点未知）"
 
 
+def _version_row_from_tuple(
+    tup: Any,
+    checkpointer: Any,
+    *,
+    thread_id: str,
+) -> dict[str, Any]:
+    cfg = tup.config if hasattr(tup, "config") else {}
+    conf = cfg.get("configurable") if isinstance(cfg, dict) else {}
+    cp_id = str(conf.get("checkpoint_id") or "")
+    meta = dict(tup.metadata or {}) if hasattr(tup, "metadata") else {}
+    cp_body = dict(tup.checkpoint or {}) if hasattr(tup, "checkpoint") else {}
+    if isinstance(cp_body.get("versions_seen"), dict):
+        meta = {**meta, "versions_seen": cp_body.get("versions_seen")}
+    ns = str(conf.get("checkpoint_ns") or "")
+    paths = _task_paths_from_writes(
+        checkpointer,
+        thread_id=thread_id,
+        checkpoint_ns=ns,
+        checkpoint_id=cp_id,
+    )
+    channel_values = cp_body.get("channel_values")
+    if not isinstance(channel_values, dict):
+        channel_values = {}
+    pending = list(tup.pending_writes or []) if getattr(tup, "pending_writes", None) else []
+    pending_channels = [str(item[1]) for item in pending if isinstance(item, (list, tuple)) and len(item) > 1]
+    pending_snapshot: list[Any] = []
+    for item in pending[:16]:
+        if not isinstance(item, (list, tuple)):
+            pending_snapshot.append(str(item)[:400])
+            continue
+        try:
+            pending_snapshot.append(json.loads(json.dumps(item, ensure_ascii=False, default=str)))
+        except TypeError:
+            pending_snapshot.append([str(x)[:400] for x in item])
+    meta_snap: dict[str, Any] = {}
+    if meta:
+        try:
+            meta_snap = json.loads(json.dumps(meta, ensure_ascii=False, default=str))
+        except TypeError:
+            meta_snap = {"raw": str(meta)[:800]}
+    return {
+        "checkpoint_id": cp_id,
+        "checkpoint_ns": ns,
+        "ts": str(cp_body.get("ts") or ""),
+        "source": meta.get("source"),
+        "step": meta.get("step"),
+        "node_hint": _node_hint(metadata=meta, channel_values=channel_values, task_paths=paths),
+        "task_paths": paths[:6],
+        "pending_write_channels": pending_channels[:12],
+        "pending_writes_snapshot": pending_snapshot,
+        "metadata_snapshot": meta_snap,
+        "channel_keys": list(channel_values.keys())[:20],
+        "values_preview": _preview_channel_values(channel_values),
+        "channel_snapshot": _channel_values_snapshot(channel_values),
+    }
+
+
+def _versions_from_storage(
+    checkpointer: Any,
+    thread_id: str,
+    *,
+    limit: int = 80,
+) -> list[dict[str, Any]]:
+    """list() 无结果时从 InMemorySaver.storage 回退枚举。"""
+    tid = (thread_id or "").strip()
+    storage = getattr(checkpointer, "storage", None)
+    if not tid or not isinstance(storage, dict) or tid not in storage:
+        return []
+    get_tuple = getattr(checkpointer, "get_tuple", None)
+    if not callable(get_tuple):
+        return []
+    collected: list[dict[str, Any]] = []
+    for checkpoint_ns, ns_map in storage[tid].items():
+        if not isinstance(ns_map, dict):
+            continue
+        for cp_id in sorted(ns_map.keys()):
+            if limit and len(collected) >= limit:
+                break
+            cfg = {
+                "configurable": {
+                    "thread_id": tid,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": cp_id,
+                }
+            }
+            tup = get_tuple(cfg)
+            if tup is None:
+                continue
+            collected.append(_version_row_from_tuple(tup, checkpointer, thread_id=tid))
+    return collected
+
+
 def list_checkpoint_versions(
     checkpointer: Any,
     config: dict[str, Any],
@@ -130,48 +299,17 @@ def list_checkpoint_versions(
     """按 checkpoint_id 升序列出 thread 上每个版本（释放前调用才有数据）。"""
     if checkpointer is None:
         return []
-    list_fn = getattr(checkpointer, "list", None)
-    if not callable(list_fn):
-        return []
     tid = str((config.get("configurable") or {}).get("thread_id") or "")
     collected: list[dict[str, Any]] = []
-    try:
-        for tup in list_fn(config, limit=limit):
-            cfg = tup.config if hasattr(tup, "config") else {}
-            conf = cfg.get("configurable") if isinstance(cfg, dict) else {}
-            cp_id = str(conf.get("checkpoint_id") or "")
-            meta = dict(tup.metadata or {}) if hasattr(tup, "metadata") else {}
-            cp_body = dict(tup.checkpoint or {}) if hasattr(tup, "checkpoint") else {}
-            if isinstance(cp_body.get("versions_seen"), dict):
-                meta = {**meta, "versions_seen": cp_body.get("versions_seen")}
-            ns = str(conf.get("checkpoint_ns") or "")
-            paths = _task_paths_from_writes(
-                checkpointer,
-                thread_id=tid,
-                checkpoint_ns=ns,
-                checkpoint_id=cp_id,
-            )
-            channel_values = cp_body.get("channel_values")
-            if not isinstance(channel_values, dict):
-                channel_values = {}
-            pending = list(tup.pending_writes or []) if getattr(tup, "pending_writes", None) else []
-            pending_channels = [str(item[1]) for item in pending if isinstance(item, (list, tuple)) and len(item) > 1]
-            collected.append(
-                {
-                    "checkpoint_id": cp_id,
-                    "checkpoint_ns": ns,
-                    "ts": str(cp_body.get("ts") or ""),
-                    "source": meta.get("source"),
-                    "step": meta.get("step"),
-                    "node_hint": _node_hint(metadata=meta, channel_values=channel_values, task_paths=paths),
-                    "task_paths": paths[:6],
-                    "pending_write_channels": pending_channels[:12],
-                    "channel_keys": list(channel_values.keys())[:20],
-                    "values_preview": _preview_channel_values(channel_values),
-                }
-            )
-    except Exception as exc:
-        return [{"seq": 0, "error": str(exc)[:400]}]
+    list_fn = getattr(checkpointer, "list", None)
+    if callable(list_fn):
+        try:
+            for tup in list_fn(config, limit=limit):
+                collected.append(_version_row_from_tuple(tup, checkpointer, thread_id=tid))
+        except Exception as exc:
+            return [{"seq": 0, "error": str(exc)[:400]}]
+    if not collected and tid:
+        collected = _versions_from_storage(checkpointer, tid, limit=limit)
     collected.sort(key=lambda row: str(row.get("checkpoint_id") or ""))
     for idx, row in enumerate(collected, start=1):
         row["seq"] = idx
@@ -220,6 +358,7 @@ def _state_summary(graph: Any, config: dict[str, Any]) -> dict[str, Any]:
         "next": list(snap.next or []),
         "created_at": str(getattr(snap, "created_at", "") or ""),
         "values_preview": preview,
+        "values_snapshot": _channel_values_snapshot(values),
         "interrupts": interrupts,
     }
 
@@ -249,11 +388,16 @@ def snapshot_companion_checkpoint_debug(thread_id: str) -> dict[str, Any]:
     from graph.companion import build_companion_graph
 
     graph = build_companion_graph()
+    cp_live = getattr(graph, "checkpointer", None) or cp
     block["graph_state"] = _state_summary(graph, cfg)
-    block["checkpoint_versions"] = list_checkpoint_versions(cp, cfg)
+    block["checkpoint_versions"] = list_checkpoint_versions(cp_live, cfg)
     if not block["checkpoint_versions"]:
+        storage = getattr(cp_live, "storage", None)
+        if isinstance(storage, dict):
+            block["debug_storage_thread_ids"] = sorted(storage.keys())[:40]
         block["versions_note"] = (
-            "无版本记录：可能未带 thread_id 写入、或已被 retention=run 释放、或图未挂 checkpointer。"
+            "无版本记录：未进主图、COMPANION_CHECKPOINTER=none、或 retention=run 释放后读取。"
+            " 图跑完时应带 companion_checkpoint_snapshot（释放前抓取）。"
         )
     return block
 
@@ -301,6 +445,54 @@ def snapshot_hitl_checkpoint_debug(session_id: str) -> dict[str, Any]:
         block["hitl_status"] = "没有 HITL 触发"
         block["pending"] = None
     return block
+
+
+class CheckpointVersionStreamer:
+    """轮询 checkpointer，对新 checkpoint_id 调用 emit_checkpoint_version。"""
+
+    def __init__(self, checkpointer: Any, config: dict[str, Any]) -> None:
+        self._cp = checkpointer
+        self._config = config
+        self._seen: set[str] = set()
+
+    def poll_and_emit(self) -> None:
+        if self._cp is None:
+            return
+        from algorithm.stream_debug import emit_checkpoint_version
+
+        for row in list_checkpoint_versions(self._cp, self._config):
+            cid = str(row.get("checkpoint_id") or "")
+            ns = str(row.get("checkpoint_ns") or "")
+            key = f"{ns}\x1f{cid}" if cid else f"seq-{row.get('seq')}"
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            emit_checkpoint_version(row)
+
+
+async def ainvoke_graph_emitting_checkpoints(
+    graph: Any,
+    payload: dict[str, Any],
+    invoke_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """astream updates 过程中流式推送 checkpoint 版本；返回图终态 values。"""
+    cp = getattr(graph, "checkpointer", None)
+    streamer = CheckpointVersionStreamer(cp, invoke_config) if cp and invoke_config else None
+    if invoke_config is not None:
+        async for _ in graph.astream(payload, config=invoke_config, stream_mode="updates"):
+            if streamer:
+                streamer.poll_and_emit()
+        if streamer:
+            streamer.poll_and_emit()
+        if hasattr(graph, "aget_state"):
+            snap = await graph.aget_state(invoke_config)
+        else:
+            snap = graph.get_state(invoke_config)
+        if snap is not None and getattr(snap, "values", None) is not None:
+            return dict(snap.values or {})
+        return {}
+    out = await graph.ainvoke(payload)
+    return dict(out) if isinstance(out, dict) else {}
 
 
 def build_round_checkpoint_debug(

@@ -956,7 +956,7 @@ async def chat_stream(session_id: str, req: ChatRequest) -> StreamingResponse:
             from configs.paths_b2c import ensure_uvgraph_root
 
             ensure_uvgraph_root()
-            from src.langchain.agent.stream_agent import sse_payload
+            from api.sse import sse_payload
 
             yield sse_payload({"event": "error", "message": str(exc)})
             yield sse_payload({"event": "done"})

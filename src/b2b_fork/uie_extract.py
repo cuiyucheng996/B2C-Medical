@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from b2b_fork.api_config import get_b2b_api_config
-from configs.paths_b2c import UVGRAPH_ROOT, ensure_uvgraph_root
+from configs.paths_b2c import B2C_ROOT, ensure_uvgraph_root
 
 UIE_SCHEMA: list[str] = ["部位", "疾病", "症状"]
 
@@ -23,20 +23,34 @@ __all__ = [
 
 
 def _uie_code_root() -> Path:
-    return UVGRAPH_ROOT / "External" / "uie_pytorch"
+    return B2C_ROOT / "External" / "uie_pytorch"
+
+
+def _patch_transformers_for_uie() -> None:
+    """uie_pytorch 的 ernie.py 仍从 modeling_utils 引若干工具（已迁到 pytorch_utils）。"""
+    import transformers.modeling_utils as modeling_utils
+    from transformers import pytorch_utils
+
+    for name in (
+        "apply_chunking_to_forward",
+        "find_pruneable_heads_and_indices",
+        "prune_linear_layer",
+    ):
+        if not hasattr(modeling_utils, name) and hasattr(pytorch_utils, name):
+            setattr(modeling_utils, name, getattr(pytorch_utils, name))
 
 
 def _resolve_task_path() -> Path:
     cfg = get_b2b_api_config()
+    candidates: list[Path] = []
     raw = str(cfg.get("uie_task_path") or "").strip()
     if raw:
-        path = Path(raw)
-        if not path.is_absolute():
-            path = UVGRAPH_ROOT / path
-        return path
-    b2c = UVGRAPH_ROOT / "B2C business" / "pretrained" / "uie_base_pytorch"
-    if (b2c / "pytorch_model.bin").is_file():
-        return b2c
+        p = Path(raw)
+        candidates.append(p if p.is_absolute() else B2C_ROOT / p)
+    candidates.append(B2C_ROOT / "pretrained" / "uie_base_pytorch")
+    for path in candidates:
+        if (path / "pytorch_model.bin").is_file() or (path / "model.safetensors").is_file():
+            return path
     ensure_uvgraph_root()
     from src.uie.model_cache import ensure_uie_model
 
@@ -52,6 +66,7 @@ def get_uie_predictor():
     code_root = str(_uie_code_root())
     if code_root not in sys.path:
         sys.path.insert(0, code_root)
+    _patch_transformers_for_uie()
     try:
         from uie_predictor import UIEPredictor
     except ImportError:

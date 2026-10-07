@@ -1,0 +1,24 @@
+# Chroma 向量库（Docker Desktop 可见）。数据卷落在 D:\docker\wsl\chroma_data
+#
+# 启动：
+#   docker compose -f deploy/chroma/docker-compose.yml up -d
+# 停止：
+#   docker compose -f deploy/chroma/docker-compose.yml down
+#
+# 应用 config.yaml 需配置 chroma.server_host=localhost, server_port=8000
+
+# 须与 pyproject 中 chromadb 客户端大版本一致（当前 >=1.5.9）；0.6.x 会导致建 collection KeyError('_type')
+services:
+  chroma:
+    image: chromadb/chroma:1.5.9
+    container_name: chroma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+      CHROMA_SERVER_AUTHN_CREDENTIALS: ""
+      CHROMA_SERVER_AUTHN_PROVIDER: ""
+    volumes:
+      - D:/docker/wsl/chroma_data:/chroma/chroma

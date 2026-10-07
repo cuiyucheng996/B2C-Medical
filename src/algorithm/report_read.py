@@ -70,7 +70,7 @@ def explain_uploaded_report(
     """预处理判定报告解读且给了 PDF：MinerU 拆该 PDF；否则只用切块抽指标。"""
     from pathlib import Path
 
-    from algorithm.report_ingest import _extract_indicators, _pdf_extract_module, mineru_split_tables
+    from algorithm.report_ingest import _extract_indicators, _pdf_extract_module, mineru_split_tables_cached
 
     report = last_report if isinstance(last_report, dict) else {}
     file_row = last_file if isinstance(last_file, dict) else {}
@@ -109,9 +109,10 @@ def explain_uploaded_report(
     indicators = list(file_row.get("indicators") or report.get("indicators") or [])
     mineru_pdf = str(file_row.get("mineru_pdf_path") or report.get("mineru_pdf_path") or "")
     pdf_path = Path(mineru_pdf) if mineru_pdf else None
+    cache_row = file_row if isinstance(file_row, dict) else {}
     if pdf_path is not None and pdf_path.is_file() and pdf_path.suffix.lower() == ".pdf":
         try:
-            table_json, pulled, mineru_source = mineru_split_tables(pdf_path)
+            table_json, pulled, mineru_source = mineru_split_tables_cached(pdf_path, cache_row)
             if pulled:
                 indicators = pulled
             if mineru_source:

@@ -49,7 +49,7 @@ def describe_graphs() -> dict[str, Any]:
             "name": "intent_worker",
             "nodes": _nodes(sub),
             "edges": _edges(sub),
-            "note": "execute 调 create_agent，review 不通过且未超轮次则回到 execute，finish 写出 worker_outputs。",
+            "note": "execute 调 create_agent；draft_review=off 时跳过评审 LLM；all/public 时 review 不通过且未超轮次则回到 execute。",
         },
     }
 

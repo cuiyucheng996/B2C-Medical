@@ -1,0 +1,58 @@
+"""医疗 Tool 模块：ToolSpec → ToolEntry → ToolRegistry（setup 注册）。"""
+
+from .registry import (
+    CATEGORY_LABELS,
+    ToolRegistry,
+    ensure_tools_registered,
+    format_capabilities_for_prompt,
+    get_openai_tools_for_sub_agent,
+    get_registry,
+    get_tool_by_name,
+    get_tool_detail_payload,
+    get_tool_registry,
+    get_tool_spec,
+    get_tool_specs_for_sub_agent,
+    get_tool_specs_for_visible,
+    get_tools_for_phase,
+    get_tools_for_sub_agent,
+    list_registry_entries,
+    list_registry_payload,
+    list_registry_summaries,
+    list_tool_specs,
+    reset_registry,
+    reset_tool_registry,
+)
+from .setup import register_all, register_all_agents
+from .tool_entry import ToolEntry, ToolExecutor, ToolMeta
+from .tool_spec import ToolSpec, clean_json_schema, spec_to_langchain_tool
+
+__all__ = [
+    "CATEGORY_LABELS",
+    "ToolEntry",
+    "ToolExecutor",
+    "ToolMeta",
+    "ToolRegistry",
+    "ToolSpec",
+    "clean_json_schema",
+    "ensure_tools_registered",
+    "format_capabilities_for_prompt",
+    "get_openai_tools_for_sub_agent",
+    "get_registry",
+    "get_tool_by_name",
+    "get_tool_detail_payload",
+    "get_tool_registry",
+    "get_tool_spec",
+    "get_tool_specs_for_sub_agent",
+    "get_tool_specs_for_visible",
+    "get_tools_for_phase",
+    "get_tools_for_sub_agent",
+    "list_registry_entries",
+    "list_registry_payload",
+    "list_registry_summaries",
+    "list_tool_specs",
+    "register_all",
+    "register_all_agents",
+    "reset_registry",
+    "reset_tool_registry",
+    "spec_to_langchain_tool",
+]

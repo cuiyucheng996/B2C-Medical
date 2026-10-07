@@ -103,8 +103,10 @@ async def ainvoke_supervisor_companion_graph(
             "reply": "",
             "trace": {"thread_id": tid},
         }
+        from graph.checkpoint_debug import ainvoke_graph_emitting_checkpoints
+
         if invoke_config is not None:
-            result = await app.ainvoke(sup_payload, config=invoke_config)
+            result = await ainvoke_graph_emitting_checkpoints(app, sup_payload, invoke_config)
         else:
             result = await app.ainvoke(sup_payload)
         from graph.checkpoint_debug import snapshot_companion_checkpoint_debug

@@ -63,12 +63,17 @@ def emit_merge_reply_stream(reply: str, on_token: Any, *, worker_count: int) -> 
 
 
 def _task_payload(task: dict[str, Any]) -> dict[str, Any]:
-    return {
+    row = {
         "major": str(task.get("major") or ""),
         "intent": str(task.get("intent") or ""),
         "handler": str(task.get("handler") or ""),
         "observe": str(task.get("observe") or ""),
     }
+    if task.get("task_index") is not None:
+        row["task_index"] = int(task.get("task_index") or 0)
+    if task.get("task_total") is not None:
+        row["task_total"] = int(task.get("task_total") or 0)
+    return row
 
 
 def _tasks_for_graph(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -308,10 +313,13 @@ async def ainvoke_send_companion_graph(
             "reply": "",
             "trace": {},
         }
+        graph = build_companion_graph()
+        from graph.checkpoint_debug import ainvoke_graph_emitting_checkpoints
+
         if invoke_config is not None:
-            result = await build_companion_graph().ainvoke(payload, config=invoke_config)
+            result = await ainvoke_graph_emitting_checkpoints(graph, payload, invoke_config)
         else:
-            result = await build_companion_graph().ainvoke(payload)
+            result = await graph.ainvoke(payload)
         from graph.checkpoint_debug import snapshot_companion_checkpoint_debug
 
         companion_ckpt_snap = snapshot_companion_checkpoint_debug(tid)

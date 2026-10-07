@@ -2,40 +2,92 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
-from typing import Any
+import os
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from algorithm.structured_output import invoke_structured_llm
 from algorithm.tool_think import _think_llm
 from prompt import load_prompt
+from prompt.structured_block import compose_structured_system_prompt
+from schema.llm_outputs import CompanionReviewOutput
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["review_companion_draft"]
+__all__ = [
+    "companion_draft_review_mode",
+    "companion_should_review_draft",
+    "review_companion_draft",
+]
 
-_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
+_DraftReviewMode = Literal["off", "all", "public"]
+_PUBLIC_KNOWLEDGE_MAJOR = "公共知识问答"
+
+_REVIEW_EXAMPLES = [
+    {"pass": True, "reason": "对准化验解读", "hint": ""},
+    {"pass": False, "reason": "编造了未给出的指标", "hint": "只使用工具 data 里出现的数值"},
+]
 
 
-def _parse_review(text: str) -> dict[str, Any]:
-    raw = _FENCE.sub("", (text or "").strip())
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        return {"pass": True, "reason": "评审结果无法解析，放行", "hint": ""}
-    try:
-        row = json.loads(raw[start : end + 1])
-    except json.JSONDecodeError:
-        return {"pass": True, "reason": "评审结果无法解析，放行", "hint": ""}
-    if not isinstance(row, dict):
-        return {"pass": True, "reason": "评审结果无法解析，放行", "hint": ""}
-    passed = bool(row.get("pass"))
+def _review_system_prompt() -> str:
+    return compose_structured_system_prompt(
+        load_prompt("companion_review"),
+        CompanionReviewOutput,
+        examples=_REVIEW_EXAMPLES,
+    )
+
+
+def _row_to_dict(row: CompanionReviewOutput) -> dict[str, Any]:
+    passed = bool(row.pass_)
     return {
         "pass": passed,
-        "reason": str(row.get("reason") or "").strip()[:80],
-        "hint": "" if passed else str(row.get("hint") or "").strip()[:120],
+        "reason": str(row.reason or "").strip()[:80],
+        "hint": "" if passed else str(row.hint or "").strip()[:120],
     }
+
+
+def _review_fallback() -> CompanionReviewOutput:
+    return CompanionReviewOutput(pass_=True, reason="评审结构化失败，放行", hint="")
+
+
+def _normalize_draft_review_mode(raw: str) -> _DraftReviewMode:
+    key = (raw or "off").strip().lower()
+    if key in {"0", "false", "no", "off", "disabled", ""}:
+        return "off"
+    if key in {"1", "true", "yes", "on", "all"}:
+        return "all"
+    if key in {"public", "public_knowledge", "kg", "knowledge"}:
+        return "public"
+    return "off"
+
+
+def _draft_review_mode_from_yaml() -> str:
+    try:
+        from src.configs import get_yaml_config
+
+        block = (get_yaml_config() or {}).get("companion") or {}
+        return str(block.get("draft_review") or "").strip()
+    except Exception:
+        return ""
+
+
+def companion_draft_review_mode() -> _DraftReviewMode:
+    """off=不调评审 LLM；all=每路子图都审；public=仅公共知识问答大类。"""
+    env = (os.getenv("COMPANION_DRAFT_REVIEW") or "").strip()
+    return _normalize_draft_review_mode(env or _draft_review_mode_from_yaml())
+
+
+def companion_should_review_draft(major: str, handler: str = "") -> bool:
+    mode = companion_draft_review_mode()
+    if mode == "off":
+        return False
+    if mode == "all":
+        return True
+    if mode == "public":
+        return (major or "").strip() == _PUBLIC_KNOWLEDGE_MAJOR
+    return False
 
 
 def review_companion_draft(
@@ -61,16 +113,21 @@ def review_companion_draft(
     try:
         from algorithm.llm_trace import STAGE_REVIEW, record_llm_call, serialize_langchain_messages
 
-        msgs = [SystemMessage(content=load_prompt("companion_review")), HumanMessage(content=human)]
-        resp = llm.invoke(msgs)
-        content = str(getattr(resp, "content", "") or "")
+        msgs = [SystemMessage(content=_review_system_prompt()), HumanMessage(content=human)]
+        row = invoke_structured_llm(
+            llm,
+            CompanionReviewOutput,
+            msgs,
+            label="review_companion_draft",
+            fallback=_review_fallback,
+        )
         record_llm_call(
             STAGE_REVIEW,
             serialize_langchain_messages(msgs),
-            response=content,
+            response=row.model_dump_json(by_alias=True),
             label=f"{major} / {intent} · {handler}",
         )
-        return _parse_review(content)
+        return _row_to_dict(row)
     except Exception:
         logger.warning("companion review llm failed", exc_info=True)
         return {"pass": True, "reason": "评审调用失败，放行", "hint": ""}

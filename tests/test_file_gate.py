@@ -233,6 +233,66 @@ class FileRouteIntentTest(unittest.TestCase):
         self.assertEqual(intent_for_file_role("layout_picture")["major"], "闲聊")
 
 
+class MineruCacheTest(unittest.TestCase):
+    def test_mem_sha_hit_skips_split(self) -> None:
+        from unittest.mock import patch
+
+        from algorithm.mineru_mem_cache import file_content_sha256, put_mineru_mem
+        from algorithm.report_ingest import mineru_split_tables_cached
+
+        with self._temp_pdf() as path:
+            data = path.read_bytes()
+            sha = file_content_sha256(data)
+            put_mineru_mem(
+                sha,
+                structured_tables=[{"rows": [["A", "1"]]}],
+                indicators=[{"name": "A", "value": "1", "unit": "", "flag": ""}],
+                parse_source="mineru_table",
+            )
+            row = {"content_sha256": sha, "mineru_pdf_path": str(path)}
+            with patch("algorithm.report_ingest.mineru_split_tables") as split:
+                tables, indicators, source = mineru_split_tables_cached(path, row)
+                split.assert_not_called()
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(indicators[0]["name"], "A")
+            self.assertEqual(source, "mineru_table")
+
+    def test_cache_miss_calls_split(self) -> None:
+        from unittest.mock import patch
+
+        from algorithm.report_ingest import mineru_split_tables_cached
+
+        with self._temp_pdf() as path:
+            with patch(
+                "algorithm.report_ingest.mineru_split_tables",
+                return_value=([{"rows": []}], [{"name": "B", "value": "2", "unit": "", "flag": ""}], "mineru_table"),
+            ) as split:
+                tables, indicators, source = mineru_split_tables_cached(path, {})
+                split.assert_called_once()
+            self.assertEqual(indicators[0]["name"], "B")
+
+    def _temp_pdf(self):
+        import tempfile
+
+        class _Ctx:
+            def __enter__(self):
+                fd, name = tempfile.mkstemp(suffix=".pdf")
+                import os
+
+                os.write(fd, b"%PDF-1.4\n1 0 obj\nendobj\n")
+                os.close(fd)
+                self.path = Path(name)
+                return self.path
+
+            def __exit__(self, *args):
+                try:
+                    self.path.unlink()
+                except OSError:
+                    pass
+
+        return _Ctx()
+
+
 class FileToolBindTest(unittest.TestCase):
     def setUp(self) -> None:
         reset_companion_registry()

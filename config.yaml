@@ -1,0 +1,400 @@
+# 非敏感配置（可提交 Git）；API Key 仅放 .env
+
+app:
+  env: development
+  log_level: INFO
+
+# 相对 B2C business 项目根（与 mineru / external_tools 一致）
+cache:
+  root: .cache
+
+# 模型下载 Hub（parser / embedding 等共用）
+# source: huggingface | modelscope | auto（先 HF 失败再 MS）
+# hf_endpoint: 可选镜像，如 https://hf-mirror.com（也可在 .env 设 HF_ENDPOINT）
+hub:
+  source: huggingface
+  # hf_endpoint: https://hf-mirror.com
+
+mineru:
+  # local=只读 models_dir，缺文件不下载；modelscope/huggingface=首次解析自动下到 modelscope_cache
+  model_source: modelscope
+  tools_config: .cache/mineru/mineru.json
+  modelscope_cache: .cache/modelscope
+  output_dir: .cache/mineru/output
+  device: cuda
+  backend: pipeline
+  lang: ch
+  models_dir:
+    pipeline: .cache/modelscope/models/OpenDataLab--PDF-Extract-Kit-1.0/snapshots/master
+    vlm: .cache/modelscope/models/OpenDataLab--MinerU2.5-2509-1.2B/snapshots/master
+
+external_tools:
+  tesseract_dir: ".cache/external/ocr"
+  poppler_dir: ".cache/external/poppler/poppler-24.08.0/Library/bin"
+
+# C 端语音外壳（Docker ASR / TTS）。陪聊 Agent 仍只吃文本。
+voice:
+  asr_url: http://127.0.0.1:8000
+  asr_path: /v1/audio/transcriptions
+  tts_url: http://127.0.0.1:5050
+  tts_path: /v1/audio/speech
+  tts_voice: zh-CN-XiaoxiaoNeural
+  timeout: 60
+
+embedding:
+  provider: huggingface
+  model: BAAI/bge-small-zh-v1.5
+  device: cuda
+
+llm:
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+  openai:
+    base_url: ""
+    model: gpt-4o-mini
+  kimi:
+    base_url: https://api.moonshot.cn/v1
+    model: moonshot-v1-8k
+  # 陪聊上下文压缩（DashScope 兼容接口；适合中文摘要）
+  context_compress:
+    enabled: true
+    model: qwen-plus
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    keep_user_turns: 3
+    max_tokens: 400
+  # 工具信封回来后：第三方模型判断 usable data 能不能回答本轮问题
+  think:
+    enabled: true
+    model: qwen-plus
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    max_tokens: 400
+
+# C 端陪聊 LangGraph 开关（环境变量 COMPANION_* 可覆盖）
+companion:
+  # 子图 execute 后是否调 review_companion_draft：off | all | public（仅公共知识问答大类）
+  draft_review: off
+
+mysql:
+  host: localhost
+  user: root
+  password: root
+  database: menu
+  ingest_database: medical
+  conversation_database: medical
+  charset: utf8mb4
+  port: 3306
+  # MySQL → Neo4j 同步（本地导入 DDL_ai_persion.sql 后使用）
+  sync_database: ai_persion
+  sync_host: localhost
+  sync_port: 3306
+  sync_user: ""
+
+# Neo4j 图数据库（密码仅放 .env 的 NEO4J_PASSWORD）
+# Community 只支持默认库 neo4j（无法 CREATE DATABASE medical）。
+# 部位-疾病图写入默认库 neo4j。
+# Enterprise / Aura 可改为 database: medical 后执行：
+#   uv run python -m src.RAGgraph.ingest.build_medical_graph
+neo4j:
+  uri: neo4j://localhost:7687
+  user: neo4j
+  database: neo4j
+
+# 向量检索后端：chroma=本地持久化（推荐）；milvus=Docker 服务
+vector_store:
+  backend: chroma
+
+# Chroma：server_host 非空 → HttpClient（Docker 数据卷见 deploy/chroma/docker-compose.yml）
+# server_host 留空 → 嵌入式，需 persist_directory（勿与 Docker 混用两套空库）
+chroma:
+  server_host: localhost
+  server_port: 8000
+  connect_timeout_sec: 5
+
+milvus:
+  uri: http://localhost:19530
+  token: ""
+  db_name: default
+  # 秒；仅缩短不可用时的等待，正常检索仍走完整 Milvus+精排
+  rpc_timeout_sec: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  password: null
+  faq_redis_namespace: faq
+  medical_faq_redis_namespace: medical_faq
+  # 短期对话缓存（src/redis/conversation.py）
+  # 会话中不主动过期；会话结束由 finalize_session 释放
+  # ttl_seconds: 0=不设 TTL；>0 仅作异常中断兜底
+  short_conversation_namespace: conversation:short
+  short_conversation_ttl_seconds: 0
+  # 进入上下文 / List 保留的最大对话组数（一对 = user+assistant）
+  short_conversation_max_items: 20
+  # 会话槽位（部位/病/症），与短期对话同一套 TTL / 会话结束清理
+  short_slot_namespace: conversation:slots
+  # 增量压缩摘要（只追加新段落，关会话清理）
+  short_compress_namespace: conversation:compress
+
+# B2B 辨证 API 接入层与入口通道（打字 / ASR）
+# 鉴权：b2b_api.api_key_required=true，或 .env 配置了 B2B_API_KEY 时，/api/sessions 必须带 X-API-Key
+b2b_api:
+  api_key_required: false
+  rate_limit:
+    enabled: true
+    max_requests: 60
+    window_seconds: 60
+  input:
+    max_text_length: 2000
+    default_channel: text
+  asr_normalize:
+    collapse_spaces: true
+    strip_punctuation_noise: true
+  spell_check:
+    enabled: true
+    use_llm_agent: true
+    use_bert_fallback: true
+    require_high_confidence: true
+  intent_classify:
+    model_dir: checkpoint/intent_classify/best_model
+    confidence_threshold: 0.7
+    # C 端陪聊：LLM 多意图，低于阈值的细意图不进入并行任务
+    multi_intent_threshold: 0.55
+    # C 端陪聊：大意图对全部 8 个大类都打分，达到该分数的才进候选
+    major_score_threshold: 0.55
+    max_intents: 5
+    max_length: 128
+  uie:
+    enabled: true
+    model: uie-base
+    task_path: checkpoint/uie_consult/model_best
+    position_prob: 0.35
+    max_seq_len: 512
+  reply_agent:
+    enabled: true
+  qwen_fallback:
+    enabled: true
+    model: qwen-turbo
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  align_rerank:
+    enabled: true
+    recall_k: 10
+
+# 问诊 API 接入层与入口通道（打字 / ASR）
+medical_api:
+  # 生产可设 true，并在 .env 配置 MEDICAL_API_KEY
+  api_key_required: false
+  rate_limit:
+    enabled: true
+    max_requests: 60
+    window_seconds: 60
+  input:
+    max_text_length: 2000
+    default_channel: text
+  asr_normalize:
+    collapse_spaces: true
+    strip_punctuation_noise: true
+  user_memory:
+    enabled: true
+
+# Doccano 标注服务（UIE 微调；Docker 见 deploy/doccano/）
+doccano:
+  host: localhost
+  port: 8088
+  url: http://localhost:8088
+  admin_username: admin
+  admin_email: admin@example.com
+  # 相对项目根目录
+  samples_dir: data/uie/doccano/samples
+  export_dir: data/uie/doccano/export
+  uie_train_dir: data/uie/train
+  # 问诊 UIE Span 标签（与 test_uie.py schema 一致）
+  span_labels:
+    - 部位
+    - 疾病
+    - 症状
+  project:
+    type: SequenceLabeling
+    upload_format: TextLine
+    allow_overlap: true
+    use_relation_labeling: false
+
+# 问诊图 checkpointer：memory 开发默认；sqlite 需 langgraph-checkpoint-sqlite
+# C 端公共知识文档库（RAGFlow）。分块管理用官方 Web，不另做前端。
+ragflow:
+  # HTTP API：Docker 常见为 Nginx 反代到 8088（与 Web 同端口）；直连容器后端可用 9380
+  base_url: http://127.0.0.1:8088
+  web_url: http://127.0.0.1:8088
+  # 陪聊/评测召回：false=只用 B2C 本地手册分块；true=先调 RAGFlow /api/v1/retrieval
+  remote_retrieval: false
+  dataset_name: b2c_exam_handbook
+  dataset_id: ""
+  chunk_method: naive
+  embedding_model: text-embedding-v3@Tongyi-Qianwen
+  chunk_token_num: 256
+  delimiter: "\n"
+  layout_recognize: Plain Text
+  local_max_chars: 1400
+  local_naive_chars: 500
+  local_overlap: 60
+  timeout_seconds: 180
+  retrieval_timeout_seconds: 30
+  retrieval_fail_cooldown_seconds: 120
+
+# C 端公共知识 RAG 增强：多查询 + RRF + 关键词重排 + 进程内缓存（陪聊与评测共用）
+rag_enhance:
+  enabled: true
+  multi_query: true
+  max_queries: 3
+  rrf_k: 60
+  fetch_k: 12
+  top_k: 8
+  use_cache: true
+  cache_ttl_seconds: 300
+  keyword_rerank: true
+
+langgraph:
+  checkpoint: memory
+  sqlite_path: .cache/langgraph/consult.sqlite
+
+# C 端具体任务：陪聊记下意向后 POST 到 n8n Webhook，由 n8n 建 Google/Outlook 日程
+# Webhook URL 也可被 .env 的 N8N_WEBHOOK_URL 覆盖；密钥只放 .env
+n8n:
+  enabled: true
+  webhook_url: ""
+  timeout_seconds: 8
+
+# C 端 MCP：陪聊 Agent 作客户端拉外部工具；本仓库另提供 companion MCP 供 Cursor 调用
+# Windows 无 npx 时，time/fetch 自动改走 venv python -m companion_mcp.stdio_*
+# 阿里云：百炼 KB / 通义联网 / OSS 走 python stdio；也可开 bailian_kb_http（百炼托管 MCP + DASHSCOPE_API_KEY）
+mcp:
+  enabled: true
+  aliyun:
+    bailian_workspace_id: ""
+    bailian_index_id: ""
+    bailian_endpoint: bailian.cn-beijing.aliyuncs.com
+    bailian_region: cn-beijing
+    search_model: qwen-plus
+    oss_bucket: ""
+    oss_endpoint: oss-cn-beijing.aliyuncs.com
+    oss_key_prefix: b2c-reports/
+  servers:
+    time:
+      enabled: true
+      title: MCP 时间
+      summary: 第三方 Time MCP：当前时区与日期换算。
+      operation_hint: 复查提醒需要落到具体日期时用。
+      transport: stdio
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-time"
+      majors:
+        - 具体任务
+      allow_tools:
+        - get_current_time
+        - convert_time
+    fetch:
+      enabled: true
+      title: MCP 网页抓取
+      summary: 第三方 Fetch MCP：拉取公开页面文本。
+      operation_hint: 本轮已绑工具都查空后再抓网页，不当诊断。
+      transport: stdio
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-fetch"
+      majors:
+        - 公共知识问答
+      allow_tools:
+        - fetch
+    bailian_kb:
+      enabled: true
+      title: MCP 百炼知识库
+      summary: 百炼 Retrieve：运营 FAQ / 合规手册，补 Neo4j 与 Chroma。
+      operation_hint: 需要 BAILIAN_WORKSPACE_ID、INDEX_ID 与阿里云 AK。
+      transport: stdio
+      command: python
+      args:
+        - -m
+        - companion_mcp.stdio_bailian_kb
+      majors:
+        - 公共知识问答
+        - 报告指标解读
+      allow_tools:
+        - bailian_retrieve
+        - list_indices
+    bailian_kb_http:
+      enabled: false
+      title: MCP 百炼托管 RAG
+      summary: 百炼云端 MCP（Retrieve/ListIndices），Bearer 用 DASHSCOPE_API_KEY。
+      operation_hint: config 中开启 bailian_kb_http 并填 workspace。
+      transport: streamable_http
+      bailian_mcp: true
+      auth_bearer_env: DASHSCOPE_API_KEY
+      majors:
+        - 公共知识问答
+      allow_tools:
+        - Retrieve
+        - ListIndices
+    dashscope_search:
+      enabled: true
+      title: MCP 通义联网
+      summary: DashScope enable_search：政策/机构/科普，非诊断。
+      operation_hint: 本地工具查空后再用；需 DASHSCOPE_API_KEY。
+      transport: stdio
+      command: python
+      args:
+        - -m
+        - companion_mcp.stdio_dashscope_search
+      majors:
+        - 公共知识问答
+      allow_tools:
+        - web_search
+    brave_search:
+      enabled: false
+      title: MCP Brave 搜索
+      summary: Brave Search API：公开网页科普检索，非诊断。
+      operation_hint: 手册/RAGFlow 查空后再用；密钥见 .env 的 BRAVE_API_KEY。
+      transport: stdio
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-brave-search"
+      env:
+        BRAVE_API_KEY: ${BRAVE_API_KEY}
+      majors:
+        - 公共知识问答
+      allow_tools:
+        - brave_web_search
+        - brave_local_search
+    aliyun_oss:
+      enabled: false
+      title: MCP 阿里云 OSS
+      summary: 预签名 PUT：客户端直传报告 PDF。
+      operation_hint: 需 OSS_BUCKET 与 AccessKey；上传后走现有解读链。
+      transport: stdio
+      command: python
+      args:
+        - -m
+        - companion_mcp.stdio_oss
+      majors:
+        - 报告指标解读
+        - 近况陈述
+      allow_tools:
+        - oss_presign_upload
+    graphiti:
+      enabled: false
+      title: MCP Graphiti 记忆
+      summary: Graphiti MCP：search_memory_facts / search_nodes。
+      operation_hint: 补长期事实；禁止 add_memory。
+      transport: streamable_http
+      url: http://127.0.0.1:8000/mcp/
+      majors:
+        - 个人记忆问答
+        - 近况陈述
+        - 报告指标解读
+      allow_tools:
+        - search_memory_facts
+        - search_nodes

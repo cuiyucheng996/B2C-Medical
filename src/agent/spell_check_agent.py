@@ -11,14 +11,15 @@ from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent
 _B2C_ROOT = _SRC_ROOT.parent
-_UVGRAPH_ROOT = _B2C_ROOT.parent
-if str(_UVGRAPH_ROOT) not in sys.path:
-    sys.path.insert(0, str(_UVGRAPH_ROOT))
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
+from configs.paths_b2c import ensure_b2c_runtime_path
+
+ensure_b2c_runtime_path()
 
 import dotenv
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
@@ -41,7 +42,6 @@ from tools.spell_check_tools import (
 logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv(_B2C_ROOT / ".env")
-dotenv.load_dotenv(_B2C_ROOT.parent / ".env")
 
 SYSTEM_PROMPT = load_prompt("spell_check_system")
 
@@ -85,7 +85,7 @@ def _resolve_llm(config: SpellCheckConfig | None = None) -> Any:
         )
 
     raise RuntimeError(
-        "未配置 LLM：请在 B2C business/.env 或 uvgraph/.env 设置 DEEPSEEK_API_KEY"
+        "未配置 LLM：请在项目根 .env 设置 DEEPSEEK_API_KEY"
     )
 
 
@@ -117,7 +117,7 @@ def _invoke_spell_agent(config: SpellCheckConfig, chunk: str) -> CorrectionResul
         model=_chat_model(config),
         tools=tools,
         middleware=spell_check_middleware(),
-        response_format=CorrectionResult,
+        response_format=ToolStrategy(CorrectionResult),
         name="spell_check",
     )
     result = agent.invoke({"messages": [HumanMessage(content=f"请纠正以下中文文本：{chunk}")]})

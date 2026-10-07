@@ -11,6 +11,7 @@ from algorithm.rag.fuse import rrf_merge
 from algorithm.rag.query_stage import expand_queries
 from algorithm.rag.rank import keyword_rerank_hits
 from algorithm.rag.retrievers import hits_from_text_items, retrieve_chroma_hits, retrieve_handbook_hits
+from algorithm.rag.stream_trace import rag_flow_step, rag_flow_title
 from algorithm.rag.types import RagChannel, RagHit
 
 __all__ = ["run_rag_pipeline", "enhance_graph_pack"]
@@ -45,6 +46,14 @@ def enhance_graph_pack(
     seeds = list(pack.get("seeds") or [])
     summary = _summarize(handler, seeds, new_items)
     timing = int((time.perf_counter() - t0) * 1000)
+    flow_title = rag_flow_title("graph", handler)
+    rag_flow_step(flow_title, "3.1 Graph 召回 + 查询词", f"主查询：{(query or '').strip()[:200]}\nNeo4j 已有 {raw_count} 条")
+    rag_flow_step(
+        flow_title,
+        "3.6 关键词重排",
+        f"keyword_rerank={'开' if rerank_applied else '关'}；{raw_count} 条 → top_k={cfg.top_k} 共 {len(hits)} 条",
+    )
+    rag_flow_step(flow_title, "3.7 top_k 写回", f"summary 长度 {len(summary)}；管线 {timing} ms")
     return _attach_rag(
         {
             **pack,
@@ -100,12 +109,20 @@ def run_rag_pipeline(
         else f"键 channel={channel} handler={name} query={cache_q[:80]}… TTL={cfg.cache_ttl_seconds}s"
     )
 
+    flow_title = rag_flow_title(channel, name)
+    from algorithm.kb_eval_display import format_query_plan
+
+    plan0 = format_query_plan(seeds=seeds, query_text=main_q, main_query=main_q)
+    rag_flow_step(flow_title, "3.1 seeds + 主查询", plan0)
+
     t0 = time.perf_counter()
     if cfg.use_cache:
         cached = get_cached_hits(channel, cache_q, name, ttl=cfg.cache_ttl_seconds)
         if cached is not None:
+            rag_flow_step(flow_title, "3.2 可选缓存", cache_detail + " → 命中，跳过后续召回")
             items = [str(row.get("text") or "") for row in cached if row.get("text")]
             pack = _pack(name, seeds, items, _summarize(name, seeds, items), source, alignments=alignments or [])
+            rag_flow_step(flow_title, "3.7 top_k 写回", f"缓存直接返回 {len(items)} 条 items")
             return _attach_rag(
                 pack,
                 meta={
@@ -126,6 +143,7 @@ def run_rag_pipeline(
                 },
             )
         cache_detail = cache_detail + " → 未命中"
+    rag_flow_step(flow_title, "3.2 可选缓存", cache_detail)
 
     expand_base = main_q if channel == "handbook" else cache_q
     queries = expand_queries(expand_base, seeds, config=cfg)
@@ -135,6 +153,7 @@ def run_rag_pipeline(
         f"multi_query={cfg.multi_query} max={cfg.max_queries} → {len(queries)} 条待检索：\n"
         + numbered_lines(queries)
     )
+    rag_flow_step(flow_title, "3.3 多查询扩展（规则，无 LLM）", query_expand_detail)
     lists: list[list[RagHit]] = []
     recall_lines: list[str] = []
     for idx, q in enumerate(queries, start=1):
@@ -142,11 +161,15 @@ def run_rag_pipeline(
         if channel == "handbook":
             lst = retrieve_handbook_hits(q, top_k=cfg.fetch_k)
             lists.append(lst)
-            recall_lines.append(f"{idx}. RAGFlow「{snippet}」→ {len(lst)} 条")
+            line = f"{idx}. RAGFlow「{snippet}」→ {len(lst)} 条"
+            recall_lines.append(line)
+            rag_flow_step(flow_title, "3.4 多路召回", line)
         elif channel == "chroma":
             lst = retrieve_chroma_hits(q)
             lists.append(lst)
-            recall_lines.append(f"{idx}. Chroma「{snippet}」→ {len(lst)} 条")
+            line = f"{idx}. Chroma embedding 检索「{snippet}」→ {len(lst)} 条"
+            recall_lines.append(line)
+            rag_flow_step(flow_title, "3.4 多路召回（向量）", line)
         else:
             break
     recall_detail = "；".join(recall_lines) if recall_lines else "无"
@@ -172,6 +195,9 @@ def run_rag_pipeline(
             f"keyword_rerank={'开' if rerank_applied else '关'}；取 top_k={cfg.top_k} 得 {len(hits)} 条"
         )
         output_detail = f"写回 items（{len(items)}）+ summary + pack.rag"
+        rag_flow_step(flow_title, "3.5 RRF 融合", rrf_detail)
+        rag_flow_step(flow_title, "3.6 关键词重排", rerank_detail)
+        rag_flow_step(flow_title, "3.7 top_k 写回", output_detail)
     else:
         hits = []
         hit_dicts = []
@@ -183,6 +209,11 @@ def run_rag_pipeline(
 
     timing = int((time.perf_counter() - t0) * 1000)
     pack = _pack(name, seeds, items, _summarize(name, seeds, items), source, alignments=alignments or [])
+    rag_flow_step(
+        flow_title,
+        "3.8 pack.rag 元数据",
+        f"channel={channel}；note={note}；管线 {timing} ms\n待检索句：\n{numbered_lines(queries, empty='（无）')}",
+    )
     return _attach_rag(
         pack,
         meta={

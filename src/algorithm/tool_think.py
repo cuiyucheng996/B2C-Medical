@@ -1,13 +1,17 @@
-"""工具信封回来后：第三方模型判断 usable data 能否回答本轮问题。"""
+"""工具信封回来后：第三方模型开思考：data 对不上就提示本轮再调工具。"""
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+from algorithm.structured_output import invoke_structured_llm, parse_json_with_schema
+from prompt import load_prompt
+from prompt.structured_block import compose_structured_system_prompt
+from schema.llm_outputs import CompanionThinkOutput
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +21,7 @@ __all__ = [
     "judge_tool_envelopes",
     "parse_think_json",
     "usable_envelopes",
+    "_think_llm",
 ]
 
 Action = Literal["compose", "retry_tools", "give_up"]
@@ -24,7 +29,12 @@ Action = Literal["compose", "retry_tools", "give_up"]
 ThinkVerdict = dict[str, Any]
 
 _MAX_THINK = 2
-_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
+
+_THINK_EXAMPLES = [
+    {"fit": True, "action": "compose", "reason": "data.items 已含指标参考范围"},
+    {"fit": False, "action": "retry_tools", "reason": "query 太宽，需换检查名"},
+    {"fit": False, "action": "give_up", "reason": "图谱无该证型，不宜编造"},
+]
 
 
 def usable_envelopes(messages: list[Any]) -> list[dict[str, Any]]:
@@ -45,19 +55,9 @@ def usable_envelopes(messages: list[Any]) -> list[dict[str, Any]]:
     return found
 
 
-def parse_think_json(text: str) -> ThinkVerdict:
-    raw = _FENCE.sub("", (text or "").strip())
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        return {"fit": True, "action": "compose", "reason": "思考结果无法解析，按可用证据组句"}
-    try:
-        row = json.loads(raw[start : end + 1])
-    except json.JSONDecodeError:
-        return {"fit": True, "action": "compose", "reason": "思考结果无法解析，按可用证据组句"}
-    if not isinstance(row, dict):
-        return {"fit": True, "action": "compose", "reason": "思考结果无法解析，按可用证据组句"}
-    fit = bool(row.get("fit"))
-    action = str(row.get("action") or "").strip()
+def _think_output_to_verdict(row: CompanionThinkOutput) -> ThinkVerdict:
+    fit = bool(row.fit)
+    action = str(row.action)
     if action not in ("compose", "retry_tools", "give_up"):
         action = "compose" if fit else "retry_tools"
     if fit:
@@ -65,8 +65,15 @@ def parse_think_json(text: str) -> ThinkVerdict:
     return {
         "fit": fit,
         "action": action,
-        "reason": str(row.get("reason") or "").strip()[:80],
+        "reason": str(row.reason or "").strip()[:80],
     }
+
+
+def parse_think_json(text: str) -> ThinkVerdict:
+    try:
+        return _think_output_to_verdict(parse_json_with_schema(text, CompanionThinkOutput))
+    except Exception:
+        return {"fit": True, "action": "compose", "reason": "思考结果无法解析，按可用证据组句"}
 
 
 def hint_from_verdict(verdict: ThinkVerdict, *, think_count: int) -> str:
@@ -129,6 +136,22 @@ def _think_llm() -> Any:
     )
 
 
+def _think_system_prompt() -> str:
+    return compose_structured_system_prompt(
+        load_prompt("companion_think"),
+        CompanionThinkOutput,
+        examples=_THINK_EXAMPLES,
+    )
+
+
+def _think_fallback() -> CompanionThinkOutput:
+    return CompanionThinkOutput(
+        fit=True,
+        action="compose",
+        reason="思考结构化失败，按可用证据组句",
+    )
+
+
 def judge_tool_envelopes(
     *,
     query: str,
@@ -141,8 +164,6 @@ def judge_tool_envelopes(
     llm = _think_llm()
     if llm is None:
         return None
-    from prompt import load_prompt
-
     blob = json.dumps(envelopes, ensure_ascii=False)[:4000]
     human = (
         f"细意图：{major} / {intent}\n用户问题：{query or '（空）'}\n"
@@ -151,16 +172,21 @@ def judge_tool_envelopes(
     try:
         from algorithm.llm_trace import STAGE_THINK, record_llm_call, serialize_langchain_messages
 
-        msgs = [SystemMessage(content=load_prompt("companion_think")), HumanMessage(content=human)]
-        resp = llm.invoke(msgs)
-        text = str(getattr(resp, "content", "") or "").strip()
+        msgs = [SystemMessage(content=_think_system_prompt()), HumanMessage(content=human)]
+        row = invoke_structured_llm(
+            llm,
+            CompanionThinkOutput,
+            msgs,
+            label="judge_tool_envelopes",
+            fallback=_think_fallback,
+        )
         record_llm_call(
             STAGE_THINK,
             serialize_langchain_messages(msgs),
-            response=text,
+            response=row.model_dump_json(),
             label="judge_tool_envelopes",
         )
+        return _think_output_to_verdict(row)
     except Exception:
         logger.warning("tool think llm failed", exc_info=True)
-        return None
-    return parse_think_json(text)
+        return _think_output_to_verdict(_think_fallback())

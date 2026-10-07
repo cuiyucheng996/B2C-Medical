@@ -14,7 +14,6 @@ from algorithm.llm_trace import (
     note_token_usage,
     record_llm_call,
     serialize_langchain_messages,
-    take_llm_trace,
 )
 from middleware.context import CompanionRunContext
 
@@ -53,20 +52,22 @@ class CompanionLlmTraceMiddleware(AgentMiddleware):
     def _sub_label(self, runtime: Any, messages: list[Any] | None = None) -> str:
         stage = self._stage()
         route = self._route_label(runtime)
-        if stage == STAGE_AGENT:
+        ctx = getattr(runtime, "context", None)
+        if stage == STAGE_AGENT and isinstance(ctx, CompanionRunContext):
             phase = "结合工具返回结果" if self._ends_with_tool_result(messages or []) else "决策怎么用工具"
-            decide_n = 0
-            for item in take_llm_trace():
-                if str(item.get("stage") or "") != stage:
-                    continue
-                lab = str(item.get("label") or "")
-                if route and route not in lab:
-                    continue
-                if "决策怎么用工具" in lab:
-                    decide_n += 1
-            group = decide_n + 1 if phase == "决策怎么用工具" else max(decide_n, 1)
-            sub = f"第 {group} 组 · {phase}"
+            ctx.model_call_seq += 1
+            bits: list[str] = []
+            if ctx.task_index > 0:
+                bits.append(f"第 {ctx.task_index} 个子任务")
+            bits.append(f"第 {ctx.model_call_seq} 次循环")
+            bits.append(phase)
+            sub = " · ".join(bits)
+        elif stage == STAGE_AGENT:
+            phase = "结合工具返回结果" if self._ends_with_tool_result(messages or []) else "决策怎么用工具"
+            sub = f"第 1 次循环 · {phase}"
         else:
+            from algorithm.llm_trace import take_llm_trace
+
             same = 0
             for item in take_llm_trace():
                 if str(item.get("stage") or "") != stage:

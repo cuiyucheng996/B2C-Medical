@@ -1,4 +1,4 @@
-"""B2B API 接入层与入口通道配置（读主项目 config.yaml + .env）。"""
+"""B2B API 接入层与入口通道配置（读 B2C config.yaml + .env）。"""
 
 from __future__ import annotations
 

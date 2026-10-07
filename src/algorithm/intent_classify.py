@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -34,8 +33,10 @@ __all__ = [
     "major_bert_available",
     "normalize_intent_results",
     "sort_major_scores",
+    "user_text_requests_report_read",
 ]
 _MAX_INTENTS_DEFAULT = 5
+_MULTI_FINE_MAJORS = frozenset({"公共知识问答"})
 
 _MAJORS = (
     "公共知识问答",
@@ -47,7 +48,6 @@ _MAJORS = (
     "闲聊",
     "other",
 )
-_JSON_RE = re.compile(r"\{[\s\S]*\}")
 _BERT_CUTOFF = 0.7
 
 
@@ -270,6 +270,15 @@ def _intent_catalog_prompt() -> str:
     )
 
 
+def _intent_llm_human(text: str, recent_dialogue: str = "") -> str:
+    """生产路径不传近期对话；评测 API 仍可显式传入 recent_dialogue。"""
+    body = (text or "").strip()
+    dialogue = (recent_dialogue or "").strip()
+    if dialogue:
+        return f"【近期对话】\n{dialogue}\n\n【本轮用户】\n{body}"
+    return body
+
+
 def _from_llm_fields(
     major: str,
     intent: str,
@@ -310,6 +319,22 @@ def _items_from_major_scores(scores: dict[str, float] | None) -> list[CompanionI
     ]
 
 
+def _fine_item_qualifies(item: CompanionIntentResult, major_conf: float, fine_cutoff: float) -> bool:
+    return float(item.confidence or 0) >= fine_cutoff or major_conf >= major_score_threshold()
+
+
+def _merge_fine_by_handler(rows: list[CompanionIntentResult]) -> list[CompanionIntentResult]:
+    best: dict[str, CompanionIntentResult] = {}
+    for item in rows:
+        handler = str(item.handler or "").strip() or "fallback"
+        if handler == "fallback":
+            continue
+        prev = best.get(handler)
+        if prev is None or float(item.confidence or 0) >= float(prev.confidence or 0):
+            best[handler] = item
+    return sorted(best.values(), key=lambda row: (-float(row.confidence or 0), row.intent))
+
+
 def _reconcile_intents_with_major_scores(
     packed: list[CompanionIntentResult],
     scores: dict[str, float],
@@ -321,18 +346,37 @@ def _reconcile_intents_with_major_scores(
     majors_required = [name for name, _value in _majors_above_threshold(clamped)]
     fine_cutoff, _ = _intent_multi_settings()
     by_major: dict[str, CompanionIntentResult] = {}
+    multi_major_rows: list[CompanionIntentResult] = []
 
     for item in packed:
         major = str(item.major or "").strip()
         if major in {"闲聊", "other", ""}:
             continue
         major_conf = float(clamped.get(major, 0.0) or 0.0)
-        if float(item.confidence or 0) >= fine_cutoff or major_conf >= major_score_threshold():
-            prev = by_major.get(major)
-            if prev is None or float(item.confidence or 0) >= float(prev.confidence or 0):
-                by_major[major] = replace(item, major_scores=clamped)
+        if not _fine_item_qualifies(item, major_conf, fine_cutoff):
+            continue
+        row = replace(item, major_scores=clamped)
+        if major in _MULTI_FINE_MAJORS:
+            multi_major_rows.append(row)
+            continue
+        prev = by_major.get(major)
+        if prev is None or float(item.confidence or 0) >= float(prev.confidence or 0):
+            by_major[major] = row
 
     for name, value in _majors_above_threshold(clamped):
+        if name in _MULTI_FINE_MAJORS:
+            existing = [r for r in multi_major_rows if r.major == name]
+            scored = classify_fine_intents_for_major(
+                text,
+                major=name,
+                model=model,
+                llm_seconds=8,
+                major_scores=clamped,
+                major_floor=float(value),
+            )
+            merged = _merge_fine_by_handler(existing + scored)
+            multi_major_rows = [r for r in multi_major_rows if r.major != name] + merged
+            continue
         if name in by_major:
             continue
         row = classify_fine_for_major(text, major=name, model=model, llm_seconds=5)
@@ -344,12 +388,12 @@ def _reconcile_intents_with_major_scores(
             reason=f"{row.reason}；大类打分 {value}≥{major_score_threshold()}",
         )
 
-    if by_major:
-        ordered = sorted(
-            by_major.values(),
-            key=lambda row: (-float(clamped.get(row.major, row.confidence) or 0), row.major),
+    combined = list(by_major.values()) + multi_major_rows
+    if combined:
+        return sorted(
+            combined,
+            key=lambda row: (-float(clamped.get(row.major, row.confidence) or 0), row.major, -float(row.confidence or 0)),
         )
-        return ordered
     if packed:
         return [replace(item, major_scores=clamped) if not item.major_scores else item for item in packed]
     return _items_from_major_scores(clamped)
@@ -392,7 +436,8 @@ def classify_companion_intent_llm(
     ensure_uvgraph_root()
     from pydantic import BaseModel, Field
 
-    from src.langchain.agent.agent_stream import _invoke_structured_output
+    from algorithm.structured_output import invoke_structured_llm
+    from prompt.structured_block import compose_structured_system_prompt
 
     class IntentItem(BaseModel):
         major: str = Field(description="大类名称，可与 intent 一致时由 intent 反推")
@@ -412,14 +457,37 @@ def classify_companion_intent_llm(
             description="所有 confidence 达阈值的细意图，可多条；按相关度从高到低"
         )
 
-    human = f"【近期对话】\n{recent_dialogue or '（无）'}\n\n【本轮用户】\n{text}"
+    human = _intent_llm_human(text, recent_dialogue)
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         from algorithm.llm_trace import STAGE_INTENT_MAIN, record_llm_call, serialize_langchain_messages
 
-        msgs = [SystemMessage(content=_intent_catalog_prompt()), HumanMessage(content=human)]
-        choice = _invoke_structured_output(model, IntentChoices, msgs)
+        catalog_body = _intent_catalog_prompt()
+        system = compose_structured_system_prompt(
+            catalog_body,
+            IntentChoices,
+            examples=[
+                {
+                    "major_scores": [{"major": "闲聊", "confidence": 0.9}],
+                    "items": [
+                        {
+                            "major": "闲聊",
+                            "intent": "寒暄打招呼",
+                            "confidence": 0.9,
+                            "reason": "用户问好",
+                        }
+                    ],
+                }
+            ],
+        )
+        msgs = [SystemMessage(content=system), HumanMessage(content=human)]
+        choice = invoke_structured_llm(
+            model,
+            IntentChoices,
+            msgs,
+            label="classify_companion_intent_llm",
+        )
         try:
             resp_blob = choice.model_dump_json(indent=2) if hasattr(choice, "model_dump_json") else str(choice)
         except Exception:
@@ -475,11 +543,19 @@ def _fine_intent_llm_timed(
     def _call() -> tuple[str, str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        from algorithm.structured_output import invoke_structured_llm
+        from prompt.structured_block import compose_structured_system_prompt
+        from schema.llm_outputs import IntentFinePick
+
         lines = intent_prompt_lines(major=locked) or "\n".join(f"- {name}" for name in sorted(names) if name)
-        system = (
+        body = (
             f"大类已锁定为「{locked}」，不要改大类。只从下列细意图选一条：\n{lines}\n"
-            "问怎么止血、怎么护理、症状怎么处理、注意什么：选「查询某症状的生活注意事项」，不要填未细分。\n"
-            "只输出 JSON：{{\"intent\":\"清单中的名字或未细分\",\"reason\":\"短理由\"}}"
+            "问怎么止血、怎么护理、症状怎么处理、注意什么：选「查询某症状的生活注意事项」，不要填未细分。"
+        )
+        system = compose_structured_system_prompt(
+            body,
+            IntentFinePick,
+            examples=[{"intent": "查询某症状的生活注意事项", "reason": "问怎么止血"}],
         )
         invoke_model = llm_model
         if hasattr(llm_model, "model_copy"):
@@ -490,21 +566,19 @@ def _fine_intent_llm_timed(
         from algorithm.llm_trace import STAGE_INTENT_FINE, record_llm_call, serialize_langchain_messages
 
         msgs = [SystemMessage(content=system), HumanMessage(content=raw[:400])]
-        resp = invoke_model.invoke(msgs)
-        content = str(getattr(resp, "content", "") or "")
+        row = invoke_structured_llm(
+            invoke_model,
+            IntentFinePick,
+            msgs,
+            label=f"classify_fine_for_major · {locked}",
+        )
         record_llm_call(
             STAGE_INTENT_FINE,
             serialize_langchain_messages(msgs),
-            response=content,
+            response=row.model_dump_json(),
             label=f"classify_fine_for_major · {locked}",
         )
-        match = _JSON_RE.search(content)
-        if not match:
-            raise ValueError("fine intent json missing")
-        data = json.loads(match.group(0))
-        if not isinstance(data, dict):
-            raise ValueError("fine intent json invalid")
-        return str(data.get("intent") or "").strip(), str(data.get("reason") or "llm").strip()
+        return str(row.intent or "").strip(), str(row.reason or "llm").strip()
 
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
@@ -540,6 +614,176 @@ def _prefer_symptom_care(item: CompanionIntentResult, text: str) -> CompanionInt
         reason=(item.reason or "") + "；护理/止血走生活注意事项",
         major_scores=item.major_scores,
     )
+
+
+def _fine_intents_multi_llm_timed(
+    llm_model: Any,
+    raw: str,
+    locked: str,
+    names: set[str],
+    *,
+    score_threshold: float,
+    seconds: float = 12,
+) -> list[tuple[str, float, str]]:
+    """公共知识等：对清单内各细意图打相关度，返回达阈值的 (intent, confidence, reason)。"""
+
+    def _call() -> list[tuple[str, float, str]]:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from algorithm.structured_output import invoke_structured_llm
+        from prompt.structured_block import compose_structured_system_prompt
+        from schema.llm_outputs import IntentFineMultiOutput
+
+        lines = intent_prompt_lines(major=locked) or "\n".join(f"- {name}" for name in sorted(names) if name)
+        body = (
+            f"大类已锁定为「{locked}」，不要改大类。\n"
+            f"对下列**每一个**细意图单独打 0~1 相关度（用户本轮话与该细意图是否相关）；"
+            f"只保留 confidence ≥ {score_threshold} 的项，可多条。\n"
+            f"细意图清单：\n{lines}"
+        )
+        system = compose_structured_system_prompt(
+            body,
+            IntentFineMultiOutput,
+            examples=[
+                {
+                    "items": [
+                        {"intent": "查询某指标的正常范围或含义", "confidence": 0.92, "reason": "问正常值"}
+                    ]
+                }
+            ],
+        )
+        invoke_model = llm_model
+        if hasattr(llm_model, "model_copy"):
+            try:
+                invoke_model = llm_model.model_copy(update={"timeout": float(seconds)})
+            except Exception:
+                invoke_model = llm_model
+        from algorithm.llm_trace import STAGE_INTENT_FINE, record_llm_call, serialize_langchain_messages
+
+        msgs = [SystemMessage(content=system), HumanMessage(content=raw[:800])]
+        row = invoke_structured_llm(
+            invoke_model,
+            IntentFineMultiOutput,
+            msgs,
+            label=f"classify_fine_intents_multi · {locked}",
+        )
+        record_llm_call(
+            STAGE_INTENT_FINE,
+            serialize_langchain_messages(msgs),
+            response=row.model_dump_json(),
+            label=f"classify_fine_intents_multi · {locked}",
+        )
+        out: list[tuple[str, float, str]] = []
+        for item in row.items:
+            intent_name = str(item.intent or "").strip()
+            if intent_name not in names:
+                continue
+            conf = max(0.0, min(1.0, float(item.confidence or 0.0)))
+            if conf < score_threshold:
+                continue
+            out.append((intent_name, conf, str(item.reason or "llm").strip()))
+        out.sort(key=lambda item: -item[1])
+        return out
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+    from algorithm.llm_trace import run_in_llm_trace_context
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(lambda: run_in_llm_trace_context(_call)).result(timeout=seconds)
+    except FuturesTimeout:
+        logger.warning("fine intents multi llm timeout after %ss major=%s", seconds, locked)
+        return []
+    except Exception:
+        logger.warning("fine intents multi llm failed major=%s", locked, exc_info=True)
+        return []
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _rule_fine_intents_for_major(text: str, major: str, *, score_threshold: float) -> list[CompanionIntentResult]:
+    rows: list[CompanionIntentResult] = []
+    for intent_name in match_all_intents(text):
+        meta = INTENT_BY_NAME.get(intent_name) or {}
+        if str(meta.get("major") or "") != major:
+            continue
+        conf = 0.72
+        if conf < score_threshold:
+            continue
+        rows.append(
+            _pack(
+                major=major,
+                intent=intent_name,
+                confidence=conf,
+                source="rule",
+                reason="多细意图关键词命中",
+            )
+        )
+    return rows
+
+
+def classify_fine_intents_for_major(
+    text: str,
+    *,
+    major: str,
+    model: Any = None,
+    llm_seconds: float = 8,
+    major_scores: dict[str, float] | None = None,
+    major_floor: float = 0.0,
+) -> list[CompanionIntentResult]:
+    """「公共知识问答」等：保留所有达阈值的细意图（不同 handler 可并行子任务）。"""
+    raw = (text or "").strip()
+    locked = (major or "").strip()
+    if not raw or locked not in _MULTI_FINE_MAJORS:
+        return [classify_fine_for_major(text, major=major, model=model, llm_seconds=llm_seconds)]
+    fine_cutoff, _ = _intent_multi_settings()
+    names = {str(row.get("intent") or "") for row in INTENT_ROWS if str(row.get("major") or "") == locked}
+    names.discard("")
+    llm_model = model if model is not None else _default_chat_model()
+    packed: list[CompanionIntentResult] = []
+    if llm_model is not None:
+        for intent_name, conf, reason in _fine_intents_multi_llm_timed(
+            llm_model,
+            raw,
+            locked,
+            names,
+            score_threshold=fine_cutoff,
+            seconds=llm_seconds,
+        ):
+            item = _prefer_symptom_care(
+                _pack(
+                    major=locked,
+                    intent=intent_name,
+                    confidence=conf,
+                    source="llm",
+                    reason=reason,
+                    major_scores=major_scores,
+                ),
+                raw,
+            )
+            packed.append(_fill_fine(item, raw))
+    packed.extend(_rule_fine_intents_for_major(raw, locked, score_threshold=fine_cutoff))
+    merged = _merge_fine_by_handler(packed)
+    if merged:
+        floor = max(float(major_floor or 0.0), fine_cutoff)
+        return [
+            replace(
+                row,
+                confidence=max(float(row.confidence or 0), floor),
+                major_scores=major_scores or row.major_scores,
+            )
+            for row in merged
+            if float(row.confidence or 0) >= fine_cutoff
+        ]
+    single = classify_fine_for_major(text, major=locked, model=model, llm_seconds=llm_seconds)
+    return [
+        replace(
+            single,
+            confidence=max(float(single.confidence or 0), float(major_floor or 0.0)),
+            major_scores=major_scores or single.major_scores,
+        )
+    ]
 
 
 def classify_fine_for_major(
@@ -624,6 +868,10 @@ def _qwen_major(text: str) -> tuple[str, str] | None:
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
         from langchain_openai import ChatOpenAI
+
+        from algorithm.structured_output import invoke_structured_llm
+        from prompt.structured_block import compose_structured_system_prompt
+        from schema.llm_outputs import IntentMajorOutput
         from src.configs import get_app_settings, get_yaml_config
     except Exception:
         logger.warning("qwen major fallback imports failed", exc_info=True)
@@ -641,26 +889,27 @@ def _qwen_major(text: str) -> tuple[str, str] | None:
     base_url = str(cfg.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1")
     try:
         llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=0, max_tokens=200)
-        resp = llm.invoke(
-            [SystemMessage(content=load_prompt("intent_major_qwen")), HumanMessage(content=f"用户原话：{text[:400]}")]
+        system = compose_structured_system_prompt(
+            load_prompt("intent_major_qwen"),
+            IntentMajorOutput,
+            examples=[{"major": "闲聊", "reason": "打招呼"}],
         )
-        content = str(getattr(resp, "content", "") or "")
+        row = invoke_structured_llm(
+            llm,
+            IntentMajorOutput,
+            [
+                SystemMessage(content=system),
+                HumanMessage(content=f"用户原话：{text[:400]}"),
+            ],
+            label="qwen_major_fallback",
+        )
+        major = str(row.major or "other").strip()
+        reason = str(row.reason or "qwen-turbo").strip()
     except Exception:
         logger.warning("qwen-turbo major fallback call failed", exc_info=True)
         return None
-    match = _JSON_RE.search(content)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    major = str(data.get("major") or "other").strip()
     if major not in _MAJORS:
         major = "other"
-    reason = str(data.get("reason") or "qwen-turbo").strip()
     return major, reason
 
 
@@ -861,6 +1110,52 @@ def classify_companion_intents_bert(text: str) -> list[CompanionIntentResult]:
     return [_prefer_symptom_care(item, raw) for item in packed]
 
 
+def user_text_requests_report_read(text: str) -> bool:
+    """本轮话术是否在要解读/上传报告（与上传打分卡无关）。"""
+    return _text_suggests_report_major(text)
+
+
+def _text_suggests_report_major(text: str) -> bool:
+    """无上传/报告语境时，不要把「查血常规是什么意思」判成报告解读。"""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if raw.lstrip().startswith(("【上传检查报告】", "【上传图片】", "【上传文档】")):
+        return True
+    if match_intent(raw, major="报告指标解读"):
+        return True
+    compact = raw.replace(" ", "")
+    hints = (
+        "检查报告",
+        "化验单",
+        "这份报告",
+        "看看报告",
+        "报告怎么看",
+        "上传报告",
+        "报告解读",
+        "pdf报告",
+        "指标解读",
+    )
+    return any(h in compact for h in hints)
+
+
+def _filter_spurious_report_llm(
+    items: list[CompanionIntentResult] | None,
+    text: str,
+) -> list[CompanionIntentResult] | None:
+    if not items:
+        return items
+    if _text_suggests_report_major(text):
+        return items
+    kept = [item for item in items if item.major != "报告指标解读"]
+    if kept:
+        return kept
+    if all(item.major == "报告指标解读" for item in items):
+        logger.info("llm 误标报告解读，回退规则/BERT 多意图")
+        return None
+    return items
+
+
 def classify_companion_intents(
     text: str,
     model: Any = None,
@@ -879,6 +1174,7 @@ def classify_companion_intents(
         query,
         recent_dialogue=recent_dialogue,
     )
+    items = _filter_spurious_report_llm(items, raw)
     if items:
         return [_prefer_symptom_care(item, raw) for item in items]
     llm_model = model if model is not None else _default_chat_model()

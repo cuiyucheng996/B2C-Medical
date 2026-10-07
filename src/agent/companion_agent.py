@@ -103,9 +103,10 @@ def _chat_model() -> Any:
     from configs.paths_b2c import ensure_uvgraph_root
 
     ensure_uvgraph_root()
+    from algorithm.prefix_cache import wrap_companion_chat_model
     from src.llm.chat import get_chat_model
 
-    return get_chat_model()
+    return wrap_companion_chat_model(get_chat_model())
 
 
 def _clean_reply_leading_none(text: str) -> str:
@@ -179,6 +180,8 @@ async def _ainvoke_companion_agent(
         trace_id=tid,
         think_enabled=bool((turn or {}).get("think")),
         tool_trace=[],
+        task_index=int(row.get("task_index") or 0),
+        task_total=int(row.get("task_total") or 0),
     )
     human = ctx.query or "请根据预处理观察调用工具并回复。"
     tid = (agent_thread_id or "").strip() or _agent_thread_id(turn, row)
@@ -455,7 +458,14 @@ class CompanionAgent:
             major=str(task_snap.get("major") or ""),
             handler=str(task_snap.get("handler") or ""),
         )
-        history = self._history_messages(session)
+        from algorithm.memory_collect import history_for_intent_worker
+
+        history = history_for_intent_worker(
+            self._history_messages(session),
+            handler=str(task_snap.get("handler") or ""),
+            major=str(task_snap.get("major") or ""),
+            user_id=session.group_id,
+        )
         resume_payload = build_tool_hitl_resume(
             pending,
             decision=hitl_decision,
@@ -528,7 +538,9 @@ class CompanionAgent:
             if model is None:
                 reply = "已记下。当前未配置聊天模型。"
             else:
-                shortcut = self._faq_shortcut_reply(model, text, history, prep.to_dict())
+                shortcut = self._lightweight_shortcut_reply(
+                    session, model, text, history, prep.to_dict()
+                )
                 if shortcut is not None:
                     reply, meta = shortcut
                 else:
@@ -592,7 +604,9 @@ class CompanionAgent:
             if model is None:
                 reply = "已记下。当前未配置聊天模型。"
             else:
-                shortcut = self._faq_shortcut_reply(model, text, history, prep.to_dict())
+                shortcut = self._lightweight_shortcut_reply(
+                    session, model, text, history, prep.to_dict()
+                )
                 if shortcut is not None:
                     reply, meta = shortcut
                 else:
@@ -632,7 +646,7 @@ class CompanionAgent:
         from configs.paths_b2c import ensure_uvgraph_root
 
         ensure_uvgraph_root()
-        from src.langchain.agent.stream_agent import sse_payload
+        from api.sse import sse_payload
 
         yield sse_payload({"event": "thinking", "message": "正在预处理…"})
         from algorithm.reply_actions import reply_actions
@@ -695,10 +709,19 @@ class CompanionAgent:
                 reply = "已记下。当前未配置聊天模型。"
                 yield sse_payload({"event": "token", "content": reply})
             else:
-                shortcut = self._faq_shortcut_reply(model, text, history, prep.to_dict())
+                shortcut = self._lightweight_shortcut_reply(
+                    session, model, text, history, prep.to_dict()
+                )
                 if shortcut is not None:
                     reply, meta = shortcut
-                    yield sse_payload({"event": "thinking", "message": "命中固定话术，直接回复…"})
+                    if meta.get("semantic_cache"):
+                        yield sse_payload(
+                            {"event": "thinking", "message": "语义缓存命中，直接回复…"}
+                        )
+                    else:
+                        yield sse_payload(
+                            {"event": "thinking", "message": "命中固定话术，直接回复…"}
+                        )
                     yield sse_payload({"event": "token", "content": reply})
                 else:
                     yield sse_payload({"event": "thinking", "message": "正在识别意图…"})
@@ -929,15 +952,17 @@ class CompanionAgent:
         """整句命中固定话术时直接组句，不进意图和主图。"""
         from algorithm.faq_shortcut import match_faq_exact
         from algorithm.llm_trace import record_llm_call, serialize_langchain_messages
-        from langchain_core.messages import SystemMessage
+        from algorithm.prefix_cache import cached_system_message
         from prompt import load_prompt
 
+        del history  # FAQ 短路不进多轮 history，省 token
         kind = match_faq_exact(text)
         if not kind or model is None:
             return None
-        msgs: list[Any] = [SystemMessage(content=load_prompt("companion_faq"))]
-        msgs.extend(list(history or [])[-12:])
-        msgs.append(HumanMessage(content=text))
+        msgs: list[Any] = [
+            cached_system_message(load_prompt("companion_faq")),
+            HumanMessage(content=text),
+        ]
         resp = model.invoke(msgs)
         reply = str(getattr(resp, "content", "") or "").strip() or "我在，你可以直接说说近况。"
         record_llm_call(
@@ -955,6 +980,40 @@ class CompanionAgent:
             "intent_tasks": [],
         }
 
+    def _semantic_cached_reply(
+        self,
+        session: CompanionSession,
+        text: str,
+        history: list[Any],
+        preprocess: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        from algorithm.semantic_reply_cache import lookup_semantic_reply
+
+        hit = lookup_semantic_reply(session.group_id, text, history)
+        if hit is None:
+            return None
+        reply, frag = hit
+        meta = {
+            "search_query": "",
+            "preprocess": dict(preprocess or {}),
+            **frag,
+        }
+        return reply, meta
+
+    def _lightweight_shortcut_reply(
+        self,
+        session: CompanionSession,
+        model: Any,
+        text: str,
+        history: list[Any],
+        preprocess: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """exact FAQ → 语义缓存；均不进意图/主图。"""
+        faq = self._faq_shortcut_reply(model, text, history, preprocess)
+        if faq is not None:
+            return faq
+        return self._semantic_cached_reply(session, text, history, preprocess)
+
     def _attach_intent(
         self,
         session: CompanionSession,
@@ -963,16 +1022,12 @@ class CompanionAgent:
         prep: Any,
         model: Any,
     ) -> tuple[str, list[Any], str, list[BaseTool], dict[str, Any], list[dict[str, Any]]]:
-        dialogue = "\n".join(
-            f"{'用户' if isinstance(msg, HumanMessage) else '助手'}：{msg.content}"
-            for msg in history[-12:]
-            if getattr(msg, "content", None)
-        )
+        # 意图 LLM 只吃预处理后的本轮问句；多轮上下文留给子 Agent（history + 观察）
         turn = attach_intent_to_preprocess(
             prep,
             model,
             ctx=CompanionTurnContext(
-                recent_dialogue=dialogue,
+                recent_dialogue="",
                 last_file=session.last_file if isinstance(session.last_file, dict) else None,
             ),
             backend="llm",
@@ -1008,10 +1063,12 @@ class CompanionAgent:
                 "explain_uploaded_report 只读这些分区抽指标，不要再解析原件。"
             )
         tasks: list[dict[str, Any]] = []
+        intent_tasks_meta: list[dict[str, Any]] = []
         bound: list[str] = []
         for item in items:
             tools = tools_for_intent(major=item.major, handler=item.handler)
-            bound.extend(str(getattr(tool, "name", "") or "") for tool in tools)
+            tool_names = [str(getattr(tool, "name", "") or "") for tool in tools if getattr(tool, "name", None)]
+            bound.extend(tool_names)
             tasks.append(
                 {
                     "major": item.major,
@@ -1021,13 +1078,19 @@ class CompanionAgent:
                     "observe": observe,
                 }
             )
+            intent_tasks_meta.append(
+                {
+                    **intent_result_to_dict(item),
+                    "bound_tools": tool_names,
+                }
+            )
         meta = {
             "search_query": "",
             "skipped_long_memory": prep.skip_long_memory,
             "preprocess": prep.to_dict(),
             "bound_tools": bound,
-            "intent_tasks": [intent_result_to_dict(item) for item in items],
-            "recent_dialogue": dialogue,
+            "intent_tasks": intent_tasks_meta,
+            "recent_dialogue": "",
             "observe": observe,
         }
         tools = list(tasks[0]["tools"]) if tasks else []
@@ -1066,11 +1129,13 @@ class CompanionAgent:
 
     @staticmethod
     def _history_messages(session: CompanionSession) -> list[Any]:
+        from algorithm.memory_collect import strip_memory_collect_messages
+
         sid = str(session.session_id or "").strip()
         if sid:
             packed = load_b2c_agent_history(sid)
             if packed:
-                return packed
+                return strip_memory_collect_messages(packed)
         history: list[Any] = []
         for item in session.user[:-1][-40:]:
             role = str(item.get("role_type") or item.get("role") or "")
@@ -1084,8 +1149,10 @@ class CompanionAgent:
         if sid and history:
             from algorithm.context_compress import apply_incremental_compress
 
-            return apply_incremental_compress(history, session_id=sid)
-        return history
+            return strip_memory_collect_messages(
+                apply_incremental_compress(history, session_id=sid)
+            )
+        return strip_memory_collect_messages(history)
 
     @staticmethod
     def _enrich_meta_tool_bindings(meta: dict[str, Any]) -> None:
@@ -1124,6 +1191,23 @@ class CompanionAgent:
 
         reply = turn_token_footer(reply)
         self._enrich_meta_tool_bindings(meta)
+        if not hitl and reply:
+            from algorithm.semantic_reply_cache import remember_semantic_reply
+
+            src = "faq_shortcut" if meta.get("faq_shortcut") else ""
+            if meta.get("semantic_cache"):
+                src = "semantic_hit"
+            elif meta.get("langgraph"):
+                src = "graph"
+            elif meta.get("bound_tools"):
+                src = "tool"
+            remember_semantic_reply(
+                session.group_id,
+                text,
+                reply,
+                self._history_messages(session)[-12:],
+                source=src,
+            )
         graph = meta.get("langgraph") if isinstance(meta.get("langgraph"), dict) else {}
         from algorithm.run_trace import build_round_observability, current_trace_id
 
@@ -1177,6 +1261,7 @@ class CompanionAgent:
             "ingest": ingest,
             "trace_id": observability.get("trace_id") or "",
             "observability": observability,
+            "checkpoint_debug": meta.get("checkpoint_debug") or {},
             "preprocess": meta.get("preprocess"),
             "session": session_dump,
             "hitl": hitl_out,
@@ -1211,10 +1296,11 @@ class CompanionAgent:
         }
 
 
-def _rag_enhance_briefs(graph: dict[str, Any]) -> list[dict[str, str]]:
-    from algorithm.kb_eval_flow import format_companion_rag_block
+def _rag_enhance_briefs(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    from algorithm.kb_eval_flow import companion_rag_sections
+    from algorithm.rag.stream_trace import rag_flow_title
 
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     for run in list(graph.get("tool_runs") or []):
         if not isinstance(run, dict):
             continue
@@ -1231,7 +1317,17 @@ def _rag_enhance_briefs(graph: dict[str, Any]) -> list[dict[str, str]]:
                     continue
             elif not rag and source not in {"ragflow", "chroma", "neo4j"}:
                 continue
-            rows.append({"tool": tool or source or "rag", "body": format_companion_rag_block(data, tool=tool)})
+            ch = str((rag or {}).get("channel") or source or "rag")
+            handler = str(data.get("handler") or "")
+            step = rag_flow_title(ch, handler, tool=tool or "")
+            rows.append(
+                {
+                    "step": step,
+                    "tool": tool or source or "rag",
+                    "sections": companion_rag_sections(data, tool=tool),
+                    "body": "",
+                }
+            )
     return rows
 
 

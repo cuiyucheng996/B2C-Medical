@@ -161,10 +161,18 @@ def _kg_turn_query(query: str) -> tuple[str, str, dict[str, Any], list[dict[str,
 
 
 def _kg_dump(tool: str, result: dict[str, Any]) -> str:
+    data: dict[str, Any] = result
+    summary = str(result.get("summary") or "")
+    if tool == "search_exam_handbook":
+        from algorithm.kg_query import slim_handbook_pack_for_agent
+
+        data = slim_handbook_pack_for_agent(result)
+        if not summary:
+            summary = str(data.get("summary") or "")
     return dump_envelope(
         tool=tool,
-        summary=str(result.get("summary") or ""),
-        data=result,
+        summary=summary,
+        data=data,
     )
 
 
@@ -223,7 +231,7 @@ def _last_report() -> dict[str, Any]:
 
 @tool
 def explain_uploaded_report(query: str = "") -> str:
-    """判定为报告解读且有 mineru_pdf_path 则 MinerU 拆 PDF；否则用 last_file 切块抽指标。"""
+    """MinerU 拆表（进程内按文件 SHA 缓存）；命中则跳过 GPU；否则用切块抽指标。"""
     from algorithm.report_read import explain_uploaded_report as run
 
     uid = companion_user_id.get() or str(_turn().get("user_id") or "")

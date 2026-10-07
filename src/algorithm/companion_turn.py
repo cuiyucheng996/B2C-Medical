@@ -17,6 +17,7 @@ from algorithm.intent_classify import (
     intent_result_to_dict,
     normalize_intent_results,
     resolve_companion_intent_items,
+    user_text_requests_report_read,
 )
 from tools.companion_tools import tools_for_intent
 
@@ -37,7 +38,7 @@ class CompanionTurnContext:
     last_user_text: str = ""
     slot_memory: dict[str, list[str]] | None = None
     prior_user_texts: list[str] | None = None
-    recent_dialogue: str = ""
+    recent_dialogue: str = ""  # 陪聊生产默认空；多轮由 preprocess 指代补全 + 子 Agent history 承担
     last_file: dict[str, Any] | None = None
 
 
@@ -54,6 +55,8 @@ def apply_file_route_to_intents(
     uploadish = prefix.startswith(("【上传检查报告】", "【上传图片】", "【上传文档】"))
     row = last_file if isinstance(last_file, dict) else {}
     if not uploadish and not row.get("saved_path") and str(row.get("role") or "") != "layout_picture":
+        return items
+    if not uploadish and str(row.get("role") or "") == "lab_report" and not user_text_requests_report_read(text):
         return items
     spec = intent_for_file_role(str(row.get("role") or ""))
     if not spec:
@@ -90,7 +93,8 @@ def build_intent_tasks(
     observe: str,
 ) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
-    for item in items:
+    total = len(items)
+    for i, item in enumerate(items, 1):
         tools = tools_for_intent(major=item.major, handler=item.handler)
         tasks.append(
             {
@@ -99,6 +103,8 @@ def build_intent_tasks(
                 "handler": item.handler,
                 "tools": tools,
                 "observe": observe,
+                "task_index": i,
+                "task_total": total,
             }
         )
     return tasks

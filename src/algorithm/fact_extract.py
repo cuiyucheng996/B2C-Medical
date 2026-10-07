@@ -518,38 +518,46 @@ def _llm_facts(text: str, ref: datetime) -> list[dict[str, Any]]:
         from configs.paths_b2c import ensure_uvgraph_root
 
         ensure_uvgraph_root()
+        from langchain_core.messages import HumanMessage, SystemMessage
         from src.llm.chat import get_chat_model
+
+        from algorithm.structured_output import invoke_structured_llm
+        from prompt.structured_block import compose_structured_system_prompt
+        from schema.llm_outputs import FactExtractOutput
+
+        def _empty_facts() -> FactExtractOutput:
+            return FactExtractOutput(facts=[])
 
         model = get_chat_model()
         if model is None:
             return []
-        reply = model.invoke(
-            load_prompt("fact_extract").format(ref_date=ref.date().isoformat()) + text[:800]
+        system = compose_structured_system_prompt(
+            load_prompt("fact_extract").format(ref_date=ref.date().isoformat()),
+            FactExtractOutput,
+            examples=[
+                {
+                    "facts": [
+                        {
+                            "name": "北京",
+                            "fact": "用户提到地点：北京",
+                            "kind": "place",
+                            "negated": False,
+                        }
+                    ]
+                }
+            ],
         )
-        content = getattr(reply, "content", "") or ""
-        if isinstance(content, list):
-            content = "".join(str(part) for part in content)
-        payload = _parse_json(str(content))
-        facts = payload.get("facts") if isinstance(payload, dict) else None
-        if not isinstance(facts, list):
-            return []
-        return [item for item in facts if isinstance(item, dict)]
+        row = invoke_structured_llm(
+            model,
+            FactExtractOutput,
+            [
+                SystemMessage(content=system),
+                HumanMessage(content=text[:800]),
+            ],
+            label="fact_extract",
+            fallback=_empty_facts,
+        )
+        return [item.model_dump() for item in row.facts]
     except Exception:
-        logger.warning("companion fact llm skipped")
+        logger.warning("companion fact llm skipped", exc_info=True)
         return []
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    raw = (text or "").strip()
-    if "```" in raw:
-        raw = raw.split("```", 2)[1]
-        raw = re.sub(r"^json", "", raw, flags=re.I).strip()
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        data = json.loads(raw[start : end + 1])
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}

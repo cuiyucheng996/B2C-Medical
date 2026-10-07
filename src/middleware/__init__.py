@@ -22,6 +22,7 @@ from middleware.mcp_guard import McpGuardMiddleware
 from middleware.observe import CompanionObserveMiddleware
 from middleware.tool_trace import CompanionToolTraceMiddleware
 from middleware.tool_pairs import CompanionToolPairMiddleware
+from middleware.prefix_cache import CompanionPrefixCacheMiddleware
 from middleware.prompt import companion_prompt_middleware, spell_check_prompt_middleware
 from middleware.retry_hint import CompanionRetryHintMiddleware
 from middleware.spellcheck import SpellCheckBertFirstMiddleware
@@ -77,6 +78,7 @@ def companion_middleware(*, enable_tool_hitl: bool = True) -> list[Any]:
         companion_prompt_middleware,
         CompanionLlmTraceMiddleware(),
         CompanionObserveMiddleware(),
+        CompanionPrefixCacheMiddleware(),
         CompanionEntityMemoryMiddleware(),
         CompanionCompressMiddleware(),
         CompanionRetryHintMiddleware(),

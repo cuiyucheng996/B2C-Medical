@@ -88,19 +88,44 @@ def _python_stdio(module: str) -> dict[str, Any]:
     }
 
 
-def _stdio_conn(command: str, args: list[Any]) -> dict[str, Any]:
+def _stdio_env(spec: dict[str, Any] | None) -> dict[str, str]:
+    base = dict(os.environ)
+    if not isinstance(spec, dict):
+        return base
+    for key, raw in spec.items():
+        name = str(key).strip()
+        if not name:
+            continue
+        val = str(raw or "").strip()
+        if val.startswith("${") and val.endswith("}"):
+            val = (os.getenv(val[2:-1].strip()) or "").strip()
+        elif val.startswith("$") and len(val) > 1:
+            val = (os.getenv(val[1:].strip()) or "").strip()
+        if val:
+            base[name] = val
+    return base
+
+
+def _stdio_conn(command: str, args: list[Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
     argv = [str(item) for item in args]
     if command.lower() in {"npx", "npx.cmd"}:
         pkg = next((item for item in argv if item.startswith("@")), "")
         module = _NPX_TO_MODULE.get(pkg)
         if module and not _npx_bin():
             logger.info("未找到 npx，改用 %s 启动 %s", sys.executable, module)
-            return _python_stdio(module)
+            conn = _python_stdio(module)
+            if env:
+                conn["env"] = {**conn.get("env", {}), **env}
+            return conn
         npx = _npx_bin() or command
         if sys.platform == "win32":
             comspec = os.environ.get("COMSPEC") or "cmd.exe"
-            return {"transport": "stdio", "command": comspec, "args": ["/c", npx, *argv]}
-        return {"transport": "stdio", "command": npx, "args": argv}
+            out = {"transport": "stdio", "command": comspec, "args": ["/c", npx, *argv]}
+        else:
+            out = {"transport": "stdio", "command": npx, "args": argv}
+        if env:
+            out["env"] = env
+        return out
     if command.lower() in {"python", "python3", "py"}:
         if len(argv) >= 2 and argv[0] == "-m":
             return _python_stdio(argv[1])
@@ -122,11 +147,15 @@ def _connections() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]
     for name, spec in servers.items():
         if not isinstance(spec, dict) or not spec.get("enabled"):
             continue
+        if name == "brave_search" and not (os.getenv("BRAVE_API_KEY") or "").strip():
+            logger.info("MCP brave_search 未配置 BRAVE_API_KEY，跳过")
+            continue
         transport = str(spec.get("transport") or "streamable_http").strip()
         url = _resolve_url(spec) or str(spec.get("url") or "").strip()
         command = str(spec.get("command") or "").strip()
         if transport in {"stdio"} and command:
-            conns[name] = _stdio_conn(command, list(spec.get("args") or []))
+            child_env = _stdio_env(spec.get("env") if isinstance(spec.get("env"), dict) else None)
+            conns[name] = _stdio_conn(command, list(spec.get("args") or []), env=child_env)
         elif url:
             conn: dict[str, Any] = {"transport": transport, "url": url}
             headers = _auth_headers(spec)
@@ -213,8 +242,8 @@ async def _load_all() -> dict[str, list[BaseTool]]:
         try:
             client = MultiServerMCPClient({name: conn}, tool_name_prefix=True)
             tools = await client.get_tools()
-        except Exception:
-            logger.warning("MCP 服务 %s 加载失败，跳过", name, exc_info=True)
+        except Exception as exc:
+            logger.warning("MCP 服务 %s 加载失败，跳过: %s", name, exc)
             grouped[name] = []
             continue
         allow = list((meta.get(name) or {}).get("allow_tools") or [])

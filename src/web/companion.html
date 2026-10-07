@@ -105,6 +105,15 @@
       letter-spacing: 0.03em;
     }
     .dbg .step-hd:first-child { margin-top: 4px; }
+    .dbg details.llm-fold { margin: 8px 0 4px; }
+    .dbg details.llm-fold > summary.step-hd {
+      cursor: pointer;
+      list-style: none;
+      margin: 0;
+    }
+    .dbg details.llm-fold > summary.step-hd::-webkit-details-marker { display: none; }
+    .dbg details.llm-fold > summary.step-hd::before { content: "▸ "; color: var(--accent); }
+    .dbg details.llm-fold[open] > summary.step-hd::before { content: "▾ "; }
     .dbg .sec {
       margin: 10px 0 0 4px;
       padding-left: 8px;
@@ -187,7 +196,7 @@
             <div class="dbg" id="dumpPrep"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
-            <h3>怎么回答的</h3>
+            <h3>进入到图后的 checkpoint</h3>
             <div class="dbg" id="dumpRound"><div class="empty">还没有</div></div>
           </div>
           <div class="block">
@@ -220,17 +229,55 @@
     let resumeToken = "";
     let closing = false;
     let liveLlmRows = [];
+    let liveRagRows = [];
     let liveToolRows = [];
     let liveMwRows = [];
+    let liveCkptRows = [];
+    let liveCkptHowItRan = "";
     const $ = (id) => document.getElementById(id);
 
     function resetLiveDebug() {
       liveLlmRows = [];
+      liveRagRows = [];
       liveToolRows = [];
       liveMwRows = [];
+      liveCkptRows = [];
+      liveCkptHowItRan = "";
       fillDbg($("dumpFacts"), []);
+      fillDbg($("dumpRag"), []);
       fillDbg($("dumpTrace"), []);
       fillDbg($("dumpMiddleware"), []);
+      fillDbg($("dumpRound"), []);
+    }
+
+    function paintLiveCheckpoint() {
+      const rows = [];
+      if (liveCkptHowItRan) rows.push(["走法", liveCkptHowItRan]);
+      if (liveCkptRows.length) {
+        rows.push(["节", "主图 checkpoint（流式）"]);
+      }
+      liveCkptRows.forEach((row) => rows.push(row));
+      fillDbg($("dumpRound"), rows, { foldTitles: true });
+    }
+
+    function pushRagDebugRows(data) {
+      const step = data.step || "RAG增强";
+      let lastTitle = "";
+      for (let i = liveRagRows.length - 1; i >= 0; i--) {
+        if (liveRagRows[i][0] === "标题") {
+          lastTitle = liveRagRows[i][1];
+          break;
+        }
+      }
+      if (lastTitle !== step) {
+        liveRagRows.push(["标题", step]);
+      }
+      (data.sections || []).forEach((sec) => {
+        if (!sec) return;
+        liveRagRows.push(["节", sec.title || ""]);
+        liveRagRows.push(["段", sec.body || ""]);
+      });
+      fillDbg($("dumpRag"), liveRagRows, { foldTitles: true });
     }
 
     function appendLiveDebug(data) {
@@ -246,7 +293,26 @@
           liveLlmRows.push(["节", "得到"]);
           liveLlmRows.push(["段", data.got]);
         }
-        fillDbg($("dumpFacts"), liveLlmRows);
+        fillDbg($("dumpFacts"), liveLlmRows, { foldTitles: true });
+        return;
+      }
+      if (data.kind === "rag") {
+        pushRagDebugRows(data);
+        return;
+      }
+      if (data.kind === "checkpoint") {
+        const v = data.version;
+        if (v && typeof v === "object") {
+          checkpointVersionRows(v).forEach((row) => liveCkptRows.push(row));
+        } else {
+          liveCkptRows.push(["标题", data.title || "checkpoint 版本"]);
+          (data.sections || []).forEach((sec) => {
+            if (!sec) return;
+            liveCkptRows.push(["节", sec.title || ""]);
+            liveCkptRows.push(["段", sec.body || ""]);
+          });
+        }
+        paintLiveCheckpoint();
         return;
       }
       if (data.kind === "middleware") {
@@ -296,25 +362,51 @@
       if (typeof v === "object") return "";
       return String(v);
     }
-    function fillDbg(el, rows) {
+    function fillDbg(el, rows, opts) {
+      const fold = !!(opts && opts.foldTitles);
+      const openKeys = new Set();
+      if (fold && el) {
+        el.querySelectorAll("details.llm-fold[open] > summary").forEach((s) => {
+          openKeys.add((s.textContent || "").replace(/^[▸▾]\s*/, "").trim());
+        });
+      }
       const parts = [];
+      let group = null;
+      const flush = () => {
+        if (!group) return;
+        parts.push(group.join("") + "</details>");
+        group = null;
+      };
+      const push = (html) => {
+        if (group) group.push(html);
+        else parts.push(html);
+      };
       for (const r of rows || []) {
         if (!r) continue;
         if (r[0] === "标题") {
-          parts.push('<div class="step-hd">' + esc(r[1]) + "</div>");
+          if (fold) {
+            flush();
+            const title = String(r[1] || "");
+            const opened = openKeys.has(title.trim()) ? " open" : "";
+            group = [
+              '<details class="llm-fold"' + opened + '><summary class="step-hd">' + esc(title) + "</summary>",
+            ];
+          } else {
+            parts.push('<div class="step-hd">' + esc(r[1]) + "</div>");
+          }
           continue;
         }
         if (r[0] === "节") {
           const em = r[1] === "工具执行" || r[1] === "得到";
-          parts.push('<div class="sec' + (em ? " sec-em" : "") + '">' + esc(r[1]) + "</div>");
+          push('<div class="sec' + (em ? " sec-em" : "") + '">' + esc(r[1]) + "</div>");
           continue;
         }
         if (r[0] === "段") {
-          parts.push('<div class="para">' + esc(r[1]) + "</div>");
+          push('<div class="para">' + esc(r[1]) + "</div>");
           continue;
         }
         if (!String(r[1] || "").trim()) continue;
-        parts.push(
+        push(
           '<div class="row"><div class="k">' +
             esc(r[0]) +
             '</div><div class="v">' +
@@ -322,6 +414,7 @@
             "</div></div>"
         );
       }
+      if (fold) flush();
       if (!parts.length) {
         el.innerHTML = '<div class="empty">这一块没有内容</div>';
         return;
@@ -374,12 +467,21 @@
       return ask || "停下来等你操作";
     }
     let lastPrep = null;
-    function handlerLine(detail) {
+    function handlerLine(detail, tasks) {
+      const fromTasks = (tasks || []).map((item) => {
+        if (!item || typeof item !== "object") return "";
+        const name = item.intent || item.major || "这一路";
+        const handler = item.handler || "兜底";
+        const tools = joinBits(item.bound_tools) || "";
+        return name + "：" + handler + (tools ? " · " + tools : "");
+      }).filter(Boolean);
+      if (fromTasks.length) return fromTasks.join("\n");
       const intents = (detail && detail.intents) || [];
       const rows = intents.map((item) => {
         if (!item || typeof item !== "object") return "";
         const name = item.intent || item.major || "这一路";
-        return name + "：" + (item.handler || "兜底");
+        const tools = joinBits(item.bound_tools) || "";
+        return name + "：" + (item.handler || "兜底") + (tools ? " · " + tools : "");
       }).filter(Boolean);
       if (rows.length) return rows.join("\n");
       return detail && detail.handler ? detail.handler : "";
@@ -449,90 +551,147 @@
         ["否定", joinBits(p.negated) || "没有"],
         ["抽出", mentionLines(p.mentions) || "没有"],
         ["对齐", alignLines(p.alignments) || "没有"],
-        ["处理", handlerLine(detail) || "兜底"],
+        ["处理", handlerLine(detail, tasks) || "兜底"],
         ["拆路", splitLine(detail, graph || lastGraph)],
         ["知识库", kgLine(p)],
         ["HITL", hitlLine(hitl)],
       ]);
     }
+    function checkpointVersionTitle(v) {
+      const seq = v && v.seq != null ? v.seq : "?";
+      let title = "第" + seq + "版";
+      const hint = (v && v.node_hint) ? String(v.node_hint).trim() : "";
+      if (hint) title += " · " + hint;
+      return title;
+    }
+    function checkpointVersionRows(v) {
+      if (!v || typeof v !== "object") return [];
+      const rows = [["标题", checkpointVersionTitle(v)]];
+      const lines = [];
+      if (v.checkpoint_id) lines.push("checkpoint_id: " + v.checkpoint_id);
+      if (v.checkpoint_ns) lines.push("checkpoint_ns: " + v.checkpoint_ns);
+      if (v.ts) lines.push("ts: " + v.ts);
+      const sub = (v.step != null ? "step=" + v.step : "") + (v.source ? " · source=" + v.source : "");
+      if (sub.trim()) lines.push(sub.replace(/^ · /, ""));
+      if (lines.length) {
+        rows.push(["节", "概要"]);
+        rows.push(["段", lines.join("\n")]);
+      }
+      const snap = v.channel_snapshot && Object.keys(v.channel_snapshot).length
+        ? v.channel_snapshot
+        : (v.values_preview || null);
+      if (snap) {
+        rows.push(["节", "状态快照"]);
+        rows.push(["段", JSON.stringify(snap, null, 2)]);
+      }
+      if (v.pending_writes_snapshot && v.pending_writes_snapshot.length) {
+        rows.push(["节", "pending_writes"]);
+        rows.push(["段", JSON.stringify(v.pending_writes_snapshot, null, 2)]);
+      }
+      if (v.metadata_snapshot && Object.keys(v.metadata_snapshot).length) {
+        rows.push(["节", "metadata"]);
+        rows.push(["段", JSON.stringify(v.metadata_snapshot, null, 2)]);
+      }
+      if (v.error) {
+        rows.push(["节", "error"]);
+        rows.push(["段", String(v.error)]);
+      }
+      return rows;
+    }
+    function appendCheckpointVersionRows(rows, versions, emptyNote) {
+      const list = versions || [];
+      if (!list.length) {
+        rows.push(["节", "历史版本"]);
+        rows.push(["段", emptyNote || "（无版本）"]);
+        return;
+      }
+      list.forEach((v) => {
+        checkpointVersionRows(v).forEach((row) => rows.push(row));
+      });
+    }
     function checkpointDbgRows(ckpt) {
       const block = ckpt && typeof ckpt === "object" ? ckpt : null;
       if (!block) return [];
-      const rows = [["标题", "checkpoint"]];
+      const rows = [];
       const comp = block.companion_checkpointer || {};
       const hitl = block.hitl_checkpointer || {};
-      rows.push(["节", "get_companion_checkpointer()"]);
-      rows.push(["实例", JSON.stringify(comp.checkpointer || {}, null, 2)]);
-      rows.push(["主图 thread", String(comp.thread_id || "")]);
-      rows.push(["retention", String(comp.retention || "")]);
-      rows.push(["graph_state", JSON.stringify(comp.graph_state || {}, null, 2)]);
-      const versions = comp.checkpoint_versions || [];
-      rows.push(["节", "主图 checkpoint 版本序列"]);
-      if (!versions.length) {
-        rows.push(["段", String(comp.versions_note || comp.read_after_release ? "释放后读取，版本已清空" : "（无版本）")]);
+      const gs = comp.graph_state || {};
+      const metaLines = [
+        "thread_id: " + (comp.thread_id || "—"),
+        "retention: " + (comp.retention || "—"),
+        "graph_enabled: " + (comp.graph_enabled != null ? comp.graph_enabled : "—"),
+        "captured_before_release: " + (comp.captured_before_release != null ? comp.captured_before_release : "—"),
+        "checkpointer: " + JSON.stringify(comp.checkpointer || {}, null, 0),
+      ];
+      if (comp.read_after_release) metaLines.push("read_after_release: true");
+      if (comp.debug_storage_thread_ids && comp.debug_storage_thread_ids.length) {
+        metaLines.push("storage 内 thread: " + comp.debug_storage_thread_ids.join("、"));
       }
-      versions.forEach((v) => {
-        if (!v || typeof v !== "object") return;
-        const head = "#" + (v.seq || "?") + " · " + (v.node_hint || "节点") +
-          " · step=" + (v.step != null ? v.step : "?") +
-          " · source=" + (v.source || "?");
-        rows.push(["序号", head]);
-        rows.push(["段", JSON.stringify(v, null, 2)]);
-      });
-      rows.push(["节", "get_hitl_checkpointer()"]);
-      rows.push(["实例", JSON.stringify(hitl.checkpointer || {}, null, 2)]);
-      rows.push(["HITL 状态", String(hitl.hitl_status || "没有 HITL 触发")]);
-      if (hitl.pending) {
-        rows.push(["待办", JSON.stringify(hitl.pending, null, 2)]);
+      rows.push(["节", "主图 checkpoint"]);
+      rows.push(["段", metaLines.join("\n")]);
+      if (gs.next || gs.created_at || gs.values_preview) {
+        rows.push(["节", "graph_state 摘要"]);
+        rows.push(["段", JSON.stringify({
+          next: gs.next,
+          created_at: gs.created_at,
+          values_preview: gs.values_preview,
+          interrupts: gs.interrupts,
+        }, null, 2)]);
       }
-      rows.push(["slot 图", JSON.stringify(hitl.slot_graph_state || {}, null, 2)]);
-      rows.push(["meta 图", JSON.stringify(hitl.meta_graph_state || {}, null, 2)]);
-      const slotVers = hitl.slot_checkpoint_versions || [];
-      const metaVers = hitl.meta_checkpoint_versions || [];
-      if (slotVers.length) {
-        rows.push(["节", "HITL slot checkpoint 版本序列"]);
-        slotVers.forEach((v) => {
-          rows.push(["序号", "#" + (v.seq || "?") + " · " + (v.node_hint || "")]);
-          rows.push(["段", JSON.stringify(v, null, 2)]);
-        });
+      const emptyMain = comp.versions_note
+        || (comp.read_after_release ? "释放后读取，版本已清空。" : "（无版本；需走主图且 COMPANION_CHECKPOINTER 未关闭）");
+      appendCheckpointVersionRows(rows, comp.checkpoint_versions, emptyMain);
+      if (gs.values_snapshot && Object.keys(gs.values_snapshot).length && !(comp.checkpoint_versions || []).length) {
+        rows.push(["标题", "终态快照（无逐步版本时）"]);
+        rows.push(["节", "状态快照"]);
+        rows.push(["段", JSON.stringify(gs.values_snapshot, null, 2)]);
       }
-      if (metaVers.length) {
-        rows.push(["节", "HITL meta checkpoint 版本序列"]);
-        metaVers.forEach((v) => {
-          rows.push(["序号", "#" + (v.seq || "?") + " · " + (v.node_hint || "")]);
-          rows.push(["段", JSON.stringify(v, null, 2)]);
-        });
+      rows.push(["节", "HITL checkpoint"]);
+      rows.push(["段", [
+        "状态: " + (hitl.hitl_status || "—"),
+        hitl.pending ? "pending: " + JSON.stringify(hitl.pending) : "",
+      ].filter(Boolean).join("\n")]);
+      appendCheckpointVersionRows(rows, hitl.slot_checkpoint_versions, "（slot 无版本）");
+      appendCheckpointVersionRows(rows, hitl.meta_checkpoint_versions, "（meta 无版本）");
+      if (block.note) {
+        rows.push(["节", "说明"]);
+        rows.push(["段", String(block.note)]);
       }
-      if (block.note) rows.push(["说明", String(block.note)]);
       return rows;
     }
     function paintRound(data, round) {
       const r = round && typeof round === "object" ? round : {};
-      const localTools = joinBits(r.bound_local_tools || data.bound_local_tools);
-      const mcpTools = joinBits(r.bound_mcp_tools || data.bound_mcp_tools);
-      const allTools = joinBits(r.bound_tools || data.bound_tools);
-      const toolLine = localTools || mcpTools
-        ? ["本地", localTools || "无"].join("：") + "\n" + ["MCP", mcpTools || "无"].join("：")
-        : allTools;
-      fillDbg($("dumpRound"), [
-        ["你说", r.user_text || ""],
-        ["工具", toolLine],
-        ["走法", howItRan(r.langgraph || data.langgraph)],
-        ["回复", (data.reply || r.reply || "").slice(0, 280)],
-      ].concat(checkpointDbgRows(r.checkpoint_debug || data.checkpoint_debug || round.checkpoint_debug)));
+      liveCkptHowItRan = howItRan(r.langgraph || data.langgraph);
+      const ckpt = r.checkpoint_debug || data.checkpoint_debug || {};
+      const rows = [["走法", liveCkptHowItRan]];
+      if (ckpt && typeof ckpt === "object" && Object.keys(ckpt).length) {
+        checkpointDbgRows(ckpt).forEach((row) => rows.push(row));
+      }
+      fillDbg($("dumpRound"), rows, { foldTitles: true });
     }
     function paintRag(blocks) {
       const rows = [];
       (blocks || []).forEach((item) => {
         if (!item) return;
-        rows.push(["标题", item.tool || "RAG"]);
-        rows.push(["段", item.body || ""]);
+        const title = item.step || (item.tool ? "RAG增强 · " + item.tool : "RAG");
+        rows.push(["标题", title]);
+        if (Array.isArray(item.sections) && item.sections.length) {
+          item.sections.forEach((sec) => {
+            if (!sec) return;
+            rows.push(["节", sec.title || ""]);
+            rows.push(["段", sec.body || ""]);
+          });
+        } else if (item.body) {
+          rows.push(["节", "流程与片段"]);
+          rows.push(["段", item.body || ""]);
+        }
       });
       if (!rows.length) {
-        fillDbg($("dumpRag"), [["段", "本轮没有 RAGFlow / Chroma / 图谱增强检索。"]]);
+        fillDbg($("dumpRag"), []);
         return;
       }
-      fillDbg($("dumpRag"), rows);
+      liveRagRows = rows.slice();
+      fillDbg($("dumpRag"), rows, { foldTitles: true });
     }
     function paintLlm(calls) {
       const rows = [];
@@ -554,7 +713,7 @@
           rows.push(["段", item.got]);
         }
       });
-      fillDbg($("dumpFacts"), rows);
+      fillDbg($("dumpFacts"), rows, { foldTitles: true });
     }
     function paintTrace(obs) {
       const o = obs && typeof obs === "object" ? obs : {};

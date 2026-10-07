@@ -12,9 +12,9 @@ description: >-
 
 | 层 | 位置 | 职责 |
 |----|------|------|
-| **生产运行时** | `B2C business/src` + uvgraph 根 `src.*` | REST、Session、LangGraph、Agent、MCP Client、Redis 短期记忆 |
+| **生产运行时** | `B2C business/src` + `vendor/uvgraph`（`import src.*`） | REST、Session、LangGraph、Agent、MCP Client、Redis 短期记忆 |
 | **离线 ML** | `src/models/`、`src/runner/` | BERT 纠错等训练/预测脚本，**不**单独起 Java 推理服务 |
-| **配置** | 仓库根 `.env` + `src/config.py`（uvgraph） | API Key、Redis、Neo4j；B2C 路径见 `configs/paths_b2c.py` |
+| **配置** | `B2C business/config.yaml` + `B2C business/.env` | API Key、Redis、Neo4j；路径见 `configs/paths_b2c.py`（不再依赖上级 uvgraph `sys.path`） |
 
 **C 端生产只部署 Python（Uvicorn），不部署 Spring Boot / JDK。** 文档与 Agent 禁止再把「Java 生产 + Python 训练」写成默认架构。
 
@@ -52,6 +52,8 @@ B2C business/
 | 新开替换旧场 | `session.SessionStore.create_new` |
 | MCP 连接与登记 | `uvgraph/src/configs/config.yaml` `mcp.servers` → `tools/mcp_yaml_registry.register_mcp_from_yaml` + `mcp_bridge` |
 | 意图清单 / 规则 / 训练模板 | `data/intent_catalog.yaml` → `algorithm/intent_manifest.py` |
+| 细分意图 SOP（子图 Skill） | `src/prompt/intent_skills/{handler}.md` → `intent_skill_loader` → `companion_dispatch` |
+| 结构化输出（schema 末尾 + API + 自修复 + 降级） | `prompt/structured_block.py` + `algorithm/structured_output.py` + `algorithm/json_sanitize.py` + `tools/tool_envelope.validate_envelope_json` |
 | 工具绑定 | `tools/setup.py` `INTENT_BIND` + `CompanionToolRegistry` |
 
 ## Agent 行为规范
