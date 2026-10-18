@@ -18,6 +18,7 @@ _MAJOR_AGENT: dict[str, str] = {
     "个人记忆问答": "memory_qa",
     "具体任务": "task_exec",
     "报告指标解读": "report_read",
+    "图片识别解析": "image_parse",
     "风险拦截": "risk_guard",
     "近况陈述": "life_status",
     "闲聊": "chat",

@@ -47,7 +47,9 @@ def _resolve_task_path() -> Path:
     if raw:
         p = Path(raw)
         candidates.append(p if p.is_absolute() else B2C_ROOT / p)
-    candidates.append(B2C_ROOT / "pretrained" / "uie_base_pytorch")
+    from configs.model_paths import PRETRAINED_ROOT
+
+    candidates.append(PRETRAINED_ROOT / "uie_base_pytorch")
     for path in candidates:
         if (path / "pytorch_model.bin").is_file() or (path / "model.safetensors").is_file():
             return path

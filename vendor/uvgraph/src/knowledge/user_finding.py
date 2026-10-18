@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from src.configs import NEO4J_CONFIG
 from src.RAGgraph.driver.neo4j_driver import get_neo4j_driver
@@ -21,6 +23,7 @@ __all__ = [
     "ensure_finding_indexes",
     "find_companion_facts",
     "link_extracts",
+    "link_memory_day",
     "list_companion_facts",
     "list_user_findings",
     "load_current_facts",
@@ -53,6 +56,14 @@ def ensure_finding_indexes() -> None:
         CREATE CONSTRAINT companion_fact_hash IF NOT EXISTS
         FOR (c:CompanionFact) REQUIRE c.fact_hash IS UNIQUE
         """,
+        """
+        CREATE CONSTRAINT memory_day_user_date IF NOT EXISTS
+        FOR (d:MemoryDay) REQUIRE (d.user_id, d.date) IS UNIQUE
+        """,
+        """
+        CREATE INDEX finding_memory_date IF NOT EXISTS
+        FOR (f:Finding) ON (f.memory_date)
+        """,
     )
     driver = _driver()
     db = _db()
@@ -61,6 +72,52 @@ def ensure_finding_indexes() -> None:
             driver.execute_query(cypher, database_=db)
         except Exception:
             logger.warning("Finding 约束/索引创建失败，继续写入: %s", cypher.split()[1:4])
+
+
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def memory_date_from_created(created_at: str) -> str:
+    """入库时间（UTC 字符串）→ 上海日历日 YYYY-MM-DD。"""
+    text = (created_at or "").strip()
+    if len(text) < 10:
+        return "unknown"
+    try:
+        dt = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.astimezone(_CN_TZ).date().isoformat()
+    except ValueError:
+        return text[:10]
+
+
+def link_memory_day(*, user_id: str, content_hash: str, created_at: str) -> str:
+    """UserInfo —ON_DAY→ MemoryDay —HAS_FINDING→ Finding；并写 f.memory_date。"""
+    uid = (user_id or "").strip()
+    h = (content_hash or "").strip()
+    if not uid or not h:
+        return ""
+    day = memory_date_from_created(created_at)
+    ensure_finding_indexes()
+    _driver().execute_query(
+        """
+        MATCH (u:UserInfo)
+        WHERE toString(u.id) = $user_id OR coalesce(u.login_name, '') = $user_id
+        WITH u LIMIT 1
+        MATCH (f:Finding {content_hash: $content_hash})
+        MERGE (d:MemoryDay {user_id: $user_id, date: $day})
+        ON CREATE SET d.timezone = 'Asia/Shanghai'
+        MERGE (u)-[:ON_DAY]->(d)
+        MERGE (d)-[:HAS_FINDING]->(f)
+        SET f.memory_date = $day
+        RETURN d.date AS date
+        """,
+        parameters_={
+            "user_id": uid,
+            "content_hash": h,
+            "day": day,
+        },
+        database_=_db(),
+    )
+    return day
 
 
 def _match_or_stub_user(user_id: str, *, created_at: str) -> None:
@@ -140,6 +197,7 @@ def merge_finding(
         },
         database_=_db(),
     )
+    link_memory_day(user_id=uid, content_hash=content_hash, created_at=created_at)
     return finding_id
 
 
@@ -228,6 +286,7 @@ def merge_companion_facts(
         if not name or not fact:
             continue
         negated = bool(item.get("negated"))
+        graphiti_type = str(item.get("graphiti_type") or "").strip()
         fact_hash = hashlib.sha256(f"{uid}|{kind}|{name}".encode("utf-8")).hexdigest()
         fact_id = str(uuid4())
         try:
@@ -244,7 +303,8 @@ def merge_companion_facts(
                   c.user_id = $user_id
                 SET c.fact = $fact,
                     c.negated = $negated,
-                    c.last_said = $said_at
+                    c.last_said = $said_at,
+                    c.graphiti_type = CASE WHEN $graphiti_type <> '' THEN $graphiti_type ELSE c.graphiti_type END
                 WITH u, c
                 MERGE (u)-[r:STATED_FACT]->(c)
                 SET r.status = 'current', r.last_said = $said_at, r.negated = $negated
@@ -262,6 +322,7 @@ def merge_companion_facts(
                     "negated": negated,
                     "said_at": said_at,
                     "content_hash": content_hash,
+                    "graphiti_type": graphiti_type,
                 },
                 database_=db,
             )
@@ -279,13 +340,16 @@ def list_companion_facts(user_id: str, *, limit: int = 20) -> list[CompanionFact
         """
         MATCH (u:UserInfo)-[r:STATED_FACT {status: 'current'}]->(c:CompanionFact)
         WHERE toString(u.id) = $user_id OR coalesce(u.login_name, '') = $user_id
+        OPTIONAL MATCH (f:Finding)-[:HAS_FACT]->(c)
         RETURN c.id AS id,
                c.fact_hash AS fact_hash,
                c.name AS name,
                c.fact AS fact,
                c.kind AS kind,
                coalesce(c.negated, false) AS negated,
-               c.last_said AS last_said
+               c.last_said AS last_said,
+               coalesce(c.graphiti_type, '') AS graphiti_type,
+               f.id AS finding_id
         ORDER BY c.last_said DESC
         LIMIT $limit
         """,
@@ -303,6 +367,8 @@ def list_companion_facts(user_id: str, *, limit: int = 20) -> list[CompanionFact
                 "kind": rec.get("kind") or "other",
                 "negated": bool(rec.get("negated")),
                 "last_said": rec.get("last_said") or "",
+                "graphiti_type": rec.get("graphiti_type") or "",
+                "finding_id": rec.get("finding_id") or "",
             }
         )
     return rows
@@ -438,13 +504,23 @@ def list_user_findings(user_id: str, *, limit: int = 30) -> list[FindingRecord]:
         MATCH (u:UserInfo)-[:HAVE]->(f:Finding)
         WHERE toString(u.id) = $user_id OR coalesce(u.login_name, '') = $user_id
         OPTIONAL MATCH (f)-[e:EXTRACTED]->(n)
-        WITH f, collect({
+        WITH f, collect(DISTINCT {
           kind: e.kind,
           name: e.name,
           mention: e.mention,
           aligned: e.aligned,
-          label: labels(n)[0]
+          label: labels(n)[0],
+          node_id: elementId(n)
         }) AS extracts
+        OPTIONAL MATCH (f)-[:HAS_FACT]->(c:CompanionFact)
+        WITH f, extracts, collect(DISTINCT {
+          id: c.id,
+          name: c.name,
+          fact: c.fact,
+          kind: c.kind,
+          negated: coalesce(c.negated, false),
+          graphiti_type: coalesce(c.graphiti_type, '')
+        }) AS linked_facts
         RETURN f.id AS id,
                f.content_hash AS content_hash,
                f.kind AS kind,
@@ -453,7 +529,9 @@ def list_user_findings(user_id: str, *, limit: int = 30) -> list[FindingRecord]:
                f.thread_id AS thread_id,
                f.source AS source,
                f.created_at AS created_at,
-               extracts
+               coalesce(f.memory_date, '') AS memory_date,
+               extracts,
+               linked_facts
         ORDER BY f.created_at DESC
         LIMIT $limit
         """,
@@ -467,6 +545,11 @@ def list_user_findings(user_id: str, *, limit: int = 30) -> list[FindingRecord]:
             if not item or not item.get("kind"):
                 continue
             extracts.append(item)
+        linked_facts = []
+        for item in rec.get("linked_facts") or []:
+            if not item or not item.get("name"):
+                continue
+            linked_facts.append(item)
         items.append(
             {
                 "id": rec.get("id") or "",
@@ -477,7 +560,9 @@ def list_user_findings(user_id: str, *, limit: int = 30) -> list[FindingRecord]:
                 "thread_id": rec.get("thread_id") or "",
                 "source": rec.get("source") or "chat",
                 "created_at": rec.get("created_at") or "",
+                "memory_date": rec.get("memory_date") or "",
                 "extracts": extracts,
+                "linked_facts": linked_facts,
             }
         )
     return items

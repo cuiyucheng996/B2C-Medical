@@ -18,6 +18,7 @@ _DOMAIN_MAJORS: dict[str, tuple[str, ...]] = {
     "knowledge": ("公共知识问答",),
     "memory": ("个人记忆问答",),
     "file": ("近况陈述",),
+    "tongue": ("图片识别解析",),
     "report": ("报告指标解读",),
     "task": ("具体任务",),
 }

@@ -10,7 +10,9 @@ from typing import Any
 
 __all__ = ["load_user_ui_draft", "save_user_ui_draft", "merge_user_ui_draft"]
 
-_DRAFT_ROOT = Path(__file__).resolve().parents[2] / "data" / "ui_drafts"
+from configs.data_paths import UI_DRAFTS_DIR
+
+_DRAFT_ROOT = UI_DRAFTS_DIR
 _SAFE = re.compile(r"[^a-zA-Z0-9._-]+")
 
 

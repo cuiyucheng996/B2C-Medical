@@ -17,7 +17,8 @@ __all__ = [
 _MCP_HINT = (
     "若本轮还绑定了 MCP：Time 补日期；Fetch 抓公开页；百炼 bailian_retrieve 补运营/合规；"
     "web_search（通义）与 brave_web_search（Brave）在本地 handbook/chroma 仍不够时补公开科普；"
-    "oss_presign_upload 仅报告直传 OSS；graphiti 补长期事实。"
+    "oss_presign_upload 仅报告直传 OSS；graphiti 补长期事实；"
+    "影刀 queryApplist/queryRobotParam 查流程参数，startJob/runApp 启动作业后用 queryJob 查状态，勿编造。"
     "不要 add_memory、不要清图、不要把网页/联网结果当诊断。"
 )
 
@@ -25,6 +26,7 @@ _LOCAL_TOOL_NAMES = frozenset(
     {
         "lookup_stated_consult",
         "lookup_life_facts",
+        "query_personal_memory",
         "query_consult_graph",
         "search_exam_handbook",
         "search_chroma_knowledge",

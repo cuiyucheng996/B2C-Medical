@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -90,10 +90,14 @@ async def _warm_companion_nlu_once() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from infra.registry.lifecycle import registry_shutdown, registry_startup
+
+    registry_startup("b2c-companion")
     warm_task = asyncio.create_task(_warm_companion_nlu_once())
     task = asyncio.create_task(_digest_loop())
     idle_task = asyncio.create_task(_session_idle_loop())
     yield
+    registry_shutdown()
     warm_task.cancel()
     task.cancel()
     idle_task.cancel()
@@ -116,6 +120,31 @@ app = FastAPI(
     description="长期陪聊 + Finding 记忆（非 LangGraph 问诊）",
     lifespan=lifespan,
 )
+
+try:
+    from algorithm.otel_setup import setup_otel
+
+    setup_otel(app=app, service_name="b2c-companion")
+except Exception:
+    logger.debug("otel setup skipped", exc_info=True)
+
+
+@app.middleware("http")
+async def _http_trace_middleware(request: Request, call_next):
+    from algorithm.run_trace import bind_trace_id, current_trace_id, log_trace_event
+
+    tid = (request.headers.get("x-trace-id") or request.headers.get("X-Trace-Id") or "").strip()
+    if tid:
+        bind_trace_id(tid)
+        if request.url.path.startswith("/internal"):
+            log_trace_event("internal_http_in", path=request.url.path, method=request.method)
+    response = await call_next(request)
+    out = current_trace_id()
+    if out:
+        response.headers["X-Trace-Id"] = out
+    return response
+
+
 _agent = CompanionAgent()
 _sessions = get_session_store()
 
@@ -197,6 +226,81 @@ def healthcheck() -> dict[str, str]:
     return {"status": "healthy"}
 
 
+def _internal_ok(request: Request) -> None:
+    import os
+
+    expected = (os.getenv("B2C_INTERNAL_TOKEN") or "b2c-dev-internal").strip()
+    got = (request.headers.get("x-internal-token") or "").strip()
+    if got != expected:
+        raise HTTPException(status_code=401, detail="internal_token")
+
+
+from server.builtin_server.directed_crawl.routes import router as directed_crawl_router
+from server.builtin_server.doc_ingest.routes import router as doc_ingest_router
+from server.builtin_server.report_read.routes import router as report_read_router
+
+app.include_router(doc_ingest_router, prefix="/internal/doc", dependencies=[Depends(_internal_ok)])
+app.include_router(report_read_router, prefix="/internal/report", dependencies=[Depends(_internal_ok)])
+app.include_router(directed_crawl_router, prefix="/internal/crawl", dependencies=[Depends(_internal_ok)])
+
+
+class InternalMemoryBody(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    limit: int = 30
+    query: str = ""
+    max_facts: int = 12
+    tools: list[str] = Field(default_factory=list)
+
+
+@app.post("/internal/memory/card")
+def internal_memory_card(body: InternalMemoryBody, request: Request) -> dict[str, Any]:
+    """给记忆查看服务用，不走浏览器会话。"""
+    _internal_ok(request)
+    from src.algorithm.user_memory import load_user_memory_card
+
+    uid = body.user_id.strip()
+    card = load_user_memory_card(uid, limit=min(max(body.limit, 5), 80))
+    return {"ok": True, "user_id": uid, "card": card}
+
+
+@app.post("/internal/memory/search")
+def internal_memory_search(body: InternalMemoryBody, request: Request) -> dict[str, Any]:
+    _internal_ok(request)
+    from memory.graphiti_store import search_facts
+
+    uid = body.user_id.strip()
+    facts = search_facts(user_id=uid, query=body.query.strip(), max_facts=max(1, body.max_facts))
+    return {"ok": True, "user_id": uid, "query": body.query, "facts": facts}
+
+
+@app.post("/internal/memory/rag")
+def internal_memory_rag(body: InternalMemoryBody, request: Request) -> dict[str, Any]:
+    _internal_ok(request)
+    from algorithm.memory_eval import run_memory_qa, run_memory_tool_probe
+
+    uid = body.user_id.strip()
+    q = body.query.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="缺少 query")
+    routed = run_memory_qa(user_id=uid, query=q)
+    if routed.get("is_memory_major") and routed.get("tool_results"):
+        return {"ok": True, "mode": "intent_routed", **routed}
+    probe = run_memory_tool_probe(
+        user_id=uid,
+        query=q,
+        tools=list(body.tools) or None,
+    )
+    return {
+        "ok": True,
+        "mode": "all_memory_tools",
+        "user_id": uid,
+        "query": q,
+        "intent": routed if routed.get("ok") else None,
+        "tool_results": list(probe.get("tool_results") or []),
+        "timing": probe.get("timing") or {},
+    }
+
+
 @app.get("/api/tools")
 def api_tool_registry() -> dict[str, Any]:
     """C 端工具注册表（本地 + 已登记的第三方 MCP）。"""
@@ -226,6 +330,33 @@ def api_kb_documents() -> dict[str, Any]:
     if not status.get("reachable"):
         raise HTTPException(status_code=503, detail=status.get("error") or "RAGFlow 不可用")
     return {"documents": list_documents(), "web_url": status.get("web_url")}
+
+
+class KnowledgePipeRequest(BaseModel):
+    text: str = ""
+    title: str = ""
+    query: str = ""
+    url: str = ""
+
+
+@app.get("/api/kb/pipe")
+def api_kb_pipe_status() -> dict[str, Any]:
+    from algorithm.knowledge_pipe import pipe_status
+
+    return pipe_status()
+
+
+@app.post("/api/kb/pipe")
+def api_kb_pipe(body: KnowledgePipeRequest) -> dict[str, Any]:
+    """写入知识片段。text 直接入库；有 query 先联网搜索；否则用 url 抓网页。"""
+    from algorithm.knowledge_pipe import ingest
+
+    try:
+        return ingest(text=body.text, title=body.title, query=body.query, url=body.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/api/kb/documents")
@@ -268,8 +399,8 @@ class LoginRequest(BaseModel):
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(_html_page("login.html"))
+def index() -> dict[str, str]:
+    return {"ui": "http://127.0.0.1:5173/"}
 
 
 @app.get("/chat")
@@ -285,6 +416,18 @@ def tools_page() -> FileResponse:
 @app.get("/eval")
 def eval_page() -> FileResponse:
     return FileResponse(_html_page("eval.html"))
+
+
+@app.get("/ragas")
+def ragas_page() -> FileResponse:
+    return FileResponse(_html_page("ragas.html"))
+
+
+@app.get("/api/qa/hub")
+def api_qa_hub() -> dict[str, Any]:
+    from algorithm.qa_hub import build_qa_hub
+
+    return build_qa_hub()
 
 
 class EvalRunRequest(BaseModel):
@@ -686,6 +829,117 @@ async def api_eval_ragflow_ingest(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+class RagasFilesBody(BaseModel):
+    sources_text: str | None = None
+    qa_text: str | None = None
+
+
+class RagasEvalBody(BaseModel):
+    qa_text: str = ""
+    channel: str = "local"
+    top_k: int = Field(default=5, ge=1, le=20)
+    generate_answer: bool = True
+    save_report: bool = True
+
+
+@app.get("/api/eval/ragas/status")
+def api_ragas_status() -> dict[str, Any]:
+    from algorithm.ragas_pipeline import default_paths, ragas_status
+
+    paths = default_paths()
+    sources_path = Path(paths["sources"])
+    qa_path = Path(paths["qa"])
+    return {
+        **ragas_status(),
+        "sources_text": sources_path.read_text(encoding="utf-8") if sources_path.is_file() else "",
+        "qa_text": qa_path.read_text(encoding="utf-8") if qa_path.is_file() else "",
+    }
+
+
+@app.put("/api/eval/ragas/files")
+def api_ragas_save_files(body: RagasFilesBody) -> dict[str, Any]:
+    from algorithm.ragas_pipeline import default_paths, load_jsonl, save_jsonl_text
+
+    paths = default_paths()
+    out: dict[str, Any] = {}
+    if body.sources_text is not None:
+        out["sources_lines"] = save_jsonl_text(paths["sources"], body.sources_text or "")
+    if body.qa_text is not None:
+        out["qa_lines"] = save_jsonl_text(paths["qa"], body.qa_text or "")
+    out["paths"] = paths
+    return out
+
+
+@app.post("/api/eval/ragas/ingest")
+def api_ragas_ingest(body: RagasFilesBody | None = None) -> dict[str, Any]:
+    from algorithm.ragas_pipeline import default_paths, ingest_rows, load_jsonl, save_jsonl_text
+
+    paths = default_paths()
+    if body and body.sources_text.strip():
+        save_jsonl_text(paths["sources"], body.sources_text)
+    rows = load_jsonl(paths["sources"])
+    if not rows:
+        raise HTTPException(status_code=400, detail="sources.jsonl 为空")
+    results = ingest_rows(rows)
+    ok = sum(1 for r in results if r.get("ok"))
+    return {"ingested": len(results), "ok": ok, "results": results, "paths": paths}
+
+
+@app.post("/api/eval/ragas/run")
+def api_ragas_run(body: RagasEvalBody) -> dict[str, Any]:
+    from algorithm.ragas_pipeline import default_paths, load_jsonl, run_ragas_eval, save_jsonl_text
+
+    paths = default_paths()
+    if body.qa_text.strip():
+        save_jsonl_text(paths["qa"], body.qa_text)
+    channel = body.channel if body.channel in ("local", "ragflow") else "local"
+    try:
+        return run_ragas_eval(
+            qa_path=paths["qa"],
+            channel=channel,
+            top_k=body.top_k,
+            generate_answer=body.generate_answer,
+            save_report=body.save_report,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/eval/ragas/report/{name}")
+def api_ragas_report(name: str) -> dict[str, Any]:
+    from algorithm.ragas_pipeline import REPORTS_DIR
+    import json
+
+    if not name.startswith("ragas_") or ".." in name or "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="非法报告名")
+    path = REPORTS_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _require_admin(request: Request) -> dict[str, str]:
+    _user_accounts.ensure_one_admin()
+    token = request.cookies.get(_user_accounts.session_cookie_name()) or ""
+    session = _user_accounts.read_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="login_required")
+    if session.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin_required")
+    return session
+
+
+@app.get("/api/admin/users")
+def api_admin_users(request: Request, q: str = "") -> dict[str, Any]:
+    _require_admin(request)
+    try:
+        return {"ok": True, "users": _user_accounts.search_users(q)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"读取 UserInfo 失败: {exc}") from exc
+
+
 @app.get("/api/users")
 def api_list_users() -> dict[str, Any]:
     try:
@@ -694,24 +948,58 @@ def api_list_users() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"读取 UserInfo 失败: {exc}") from exc
 
 
+def _attach_session(response: Response, user: dict[str, Any]) -> None:
+    token = _user_accounts.issue_session(str(user.get("user_id") or ""), str(user.get("role") or "user"))
+    response.set_cookie(
+        _user_accounts.session_cookie_name(),
+        token,
+        max_age=7 * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
 @app.post("/api/users")
-def api_create_user(req: RegisterRequest) -> dict[str, Any]:
+def api_create_user(req: RegisterRequest, response: Response) -> dict[str, Any]:
     result = create_user(login_name=req.login_name, display_name=req.display_name, pin=req.pin)
     if not result.get("ok"):
         reason = str(result.get("reason") or "create_failed")
         status = 409 if reason == "login_name_taken" else 400
         raise HTTPException(status_code=status, detail=reason)
+    user = result.get("user") or {}
+    _attach_session(response, user)
     return result
 
 
 @app.post("/api/auth/login")
-def api_login(req: LoginRequest) -> dict[str, Any]:
+def api_login(req: LoginRequest, response: Response) -> dict[str, Any]:
     result = login_user(login_name=req.login_name, pin=req.pin)
     if not result.get("ok"):
         reason = str(result.get("reason") or "login_failed")
-        status = 404 if reason == "not_found" else 401 if reason == "bad_pin" else 400
+        status = 404 if reason == "not_found" else 401 if reason in {"bad_pin", "pin_required"} else 400
         raise HTTPException(status_code=status, detail=reason)
+    _attach_session(response, result.get("user") or {})
+    result.pop("session", None)
     return result
+
+
+@app.get("/api/auth/me")
+def api_me(request: Request) -> dict[str, Any]:
+    token = request.cookies.get(_user_accounts.session_cookie_name()) or ""
+    session = _user_accounts.read_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="login_required")
+    user = _user_accounts.get_user(session["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="login_required")
+    return {"ok": True, "user": user}
+
+
+@app.post("/api/auth/logout")
+def api_logout(response: Response) -> dict[str, Any]:
+    response.delete_cookie(_user_accounts.session_cookie_name(), path="/")
+    return {"ok": True}
 
 
 @app.post("/api/digests/run")
@@ -853,6 +1141,53 @@ def close_session(session_id: str) -> dict[str, Any]:
     return release_companion_session(session, _sessions, reason="explicit_close")
 
 
+@app.post("/api/report/gate")
+async def api_report_gate(
+    file: UploadFile = File(...),
+    source: str = Form("api"),
+    user_id: str = Form("report-api"),
+) -> dict[str, Any]:
+    """只做入库和体检报告判定。source=tool 不合规也放行。"""
+    from algorithm.report_entry import gate_report_file
+
+    try:
+        result = gate_report_file(
+            filename=file.filename or "report.bin",
+            data=await file.read(),
+            source=source,
+            user_id=user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail={"message": "不是合规的体检/化验报告", **result})
+    return result
+
+
+class ReportFactsBody(BaseModel):
+    last_file: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportHandbookBody(BaseModel):
+    query: str = ""
+
+
+@app.post("/api/report/facts")
+def api_report_facts(body: ReportFactsBody) -> dict[str, Any]:
+    """只抽指标和表，不查手册。"""
+    from algorithm.report_entry import pull_report_facts
+
+    return pull_report_facts(body.last_file)
+
+
+@app.post("/api/report/handbook")
+def api_report_handbook(body: ReportHandbookBody) -> dict[str, Any]:
+    """只查检查手册。"""
+    from algorithm.report_entry import lookup_report_handbook
+
+    return lookup_report_handbook(body.query)
+
+
 @app.post("/api/sessions/{session_id}/report")
 async def upload_report(
     session_id: str,
@@ -865,6 +1200,30 @@ async def upload_report(
         raise HTTPException(status_code=404, detail="会话不存在")
     filename = file.filename or "report.pdf"
     data = await file.read()
+    from server.builtin_server.jobs.queue import async_heavy_enabled, enqueue
+
+    if async_heavy_enabled():
+        from uuid import uuid4
+
+        folder = Path(__file__).resolve().parents[2] / ".cache" / "uploads"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{uuid4().hex}_{filename}"
+        path.write_bytes(data)
+        job_id = enqueue(
+            "chat_file",
+            {
+                "path": str(path),
+                "filename": filename,
+                "user_id": session.group_id,
+                "session_id": session.session_id,
+            },
+        )
+        return {
+            "reply": "文件已保存，正在后台解析，稍后可在记忆或报告里查看。",
+            "queued": True,
+            "job_id": job_id,
+            "file": {"name": filename, "path": str(path)},
+        }
     from algorithm.file_gate import ingest_user_file
 
     try:

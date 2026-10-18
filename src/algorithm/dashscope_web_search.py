@@ -33,17 +33,33 @@ def dashscope_web_search(query: str, *, model: str | None = None) -> dict[str, A
     block = get_yaml_config().get("mcp") if isinstance(get_yaml_config().get("mcp"), dict) else {}
     aliyun = block.get("aliyun") if isinstance(block.get("aliyun"), dict) else {}
     model_name = (model or aliyun.get("search_model") or "qwen-plus").strip()
-    try:
+    proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
+
+    def _call_generation() -> Any:
         import dashscope
         from dashscope import Generation
 
         dashscope.api_key = _api_key()
-        resp = Generation.call(
+        return Generation.call(
             model=model_name,
             messages=[{"role": "user", "content": text}],
             enable_search=True,
             result_format="message",
         )
+
+    try:
+        try:
+            resp = _call_generation()
+        except Exception as first_exc:
+            err = str(first_exc)
+            if "ProxyError" not in err and "9674" not in err and "proxy" not in err.lower():
+                raise
+            saved = {k: os.environ.pop(k) for k in proxy_keys if k in os.environ}
+            try:
+                resp = _call_generation()
+            finally:
+                for k, v in saved.items():
+                    os.environ[k] = v
         if resp.status_code != 200:
             return {
                 "success": False,

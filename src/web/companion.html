@@ -154,9 +154,9 @@
     <div class="hero">
       <div>
         <h1>B2C 长期陪聊</h1>
-        <p class="sub">进行中消息只在服务端 SessionStore；刷新/关页不释放。结束、新建、切换账号或空闲 TTL 会关场并写入 localStorage 草稿。</p>
+        <p class="sub">进行中消息只在服务端 SessionStore；刷新/关页不释放。结束、新建或空闲 TTL 会关场并写入 localStorage 草稿。</p>
         <p class="sub b2c-user-bar"></p>
-        <p class="sub"><a href="/" id="linkSwitchUser" style="color:#2f6f4e;">切换账号</a> · <a href="/tools" style="color:#2f6f4e;">工具注册表</a> · <a href="/eval" style="color:#2f6f4e;">评测台</a></p>
+        <p class="sub"><a href="/eval" style="color:#2f6f4e;">评测台</a> · <a href="/eval#ragas" style="color:#2f6f4e;">RAGAS</a></p>
       </div>
       <div class="meta">
         <span class="chip">session <strong id="chipSession">未创建</strong></span>
@@ -1042,12 +1042,6 @@
 
     $("btnNew").onclick = () => startSession({ forceNew: true });
 
-    $("linkSwitchUser").addEventListener("click", async (ev) => {
-      ev.preventDefault();
-      if (sessionId) await persistSession({ silent: true });
-      location.href = "/";
-    });
-
     async function send(preset, opts) {
       const speak = Boolean(opts && opts.speak);
       const channel = (opts && opts.channel) || "text";
@@ -1288,6 +1282,10 @@
       let uid = (params.get("user_id") || "").trim();
       if (!uid && window.B2cPersist) uid = B2cPersist.getUserId();
       if (!uid) return;
+      const prev = window.B2cPersist ? B2cPersist.getUserId() : "";
+      if (prev && prev !== uid && window.B2cPersist) {
+        await B2cPersist.releaseRemoteSession(prev);
+      }
       $("userId").value = uid;
       if (window.B2cPersist) B2cPersist.setUserId(uid);
       await startSession({ forceNew: false });

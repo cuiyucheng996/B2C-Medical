@@ -53,20 +53,20 @@ def chroma_readiness_report() -> dict[str, Any]:
             "detail": f"无法连接 Chroma：{exc}",
             "missing": list(REQUIRED_CHROMA_COLLECTIONS),
             "present": [],
-            "bootstrap": "uv run python scripts/bootstrap_chroma_vectors.py",
+            "bootstrap": "uv run python data/dev_resources/scripts/knowledge/bootstrap_chroma_vectors.py",
         }
 
     missing = [name for name in REQUIRED_CHROMA_COLLECTIONS if name not in names]
     present = [name for name in REQUIRED_CHROMA_COLLECTIONS if name in names]
     mode = chroma_client_mode()
     loc = (
-        f"Http {chroma_persist_directory()}（Docker 卷，见 deploy/chroma/docker-compose.yml）"
+        f"Http {chroma_persist_directory()}（Docker 卷，见 data/dev_resources/middleware_third_party/middleware/chroma/docker-compose.yml）"
         if mode == "http"
         else f"嵌入式 @ {chroma_persist_directory()}"
     )
     detail = f"{loc}，已有 {len(names)} 个 collection"
     if missing:
-        detail += f"；缺 {', '.join(missing)} → 运行 scripts/bootstrap_chroma_vectors.py"
+        detail += f"；缺 {', '.join(missing)} → 运行 data/dev_resources/scripts/knowledge/bootstrap_chroma_vectors.py"
     return {
         "backend": "chroma",
         "mode": mode,
@@ -76,5 +76,5 @@ def chroma_readiness_report() -> dict[str, Any]:
         "missing": missing,
         "present": present,
         "all_collections": sorted(names),
-        "bootstrap": "uv run python scripts/bootstrap_chroma_vectors.py",
+        "bootstrap": "uv run python data/dev_resources/scripts/knowledge/bootstrap_chroma_vectors.py",
     }

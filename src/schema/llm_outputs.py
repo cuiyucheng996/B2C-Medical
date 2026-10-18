@@ -11,10 +11,13 @@ __all__ = [
     "CompanionThinkOutput",
     "FactExtractOutput",
     "FactItem",
+    "GraphitiEntityItem",
+    "GraphitiNeo4jExtractOutput",
     "IntentMajorOutput",
     "IntentFinePick",
     "IntentFineMultiOutput",
     "IntentFineScoreItem",
+    "KnowledgeQueryPlan",
 ]
 
 ThinkAction = Literal["compose", "retry_tools", "give_up"]
@@ -58,6 +61,17 @@ class FactExtractOutput(BaseModel):
     facts: list[FactItem] = Field(default_factory=list)
 
 
+class GraphitiEntityItem(BaseModel):
+    entity_type: str = Field(description="Graphiti 类型或 部位/疾病/症状")
+    name: str = Field(description="标准短名")
+    mention: str = Field(default="", description="原文片段")
+    negated: bool = Field(default=False)
+
+
+class GraphitiNeo4jExtractOutput(BaseModel):
+    entities: list[GraphitiEntityItem] = Field(default_factory=list)
+
+
 class IntentMajorOutput(BaseModel):
     major: str = Field(description="大类名称")
     reason: str = Field(default="", description="短理由")
@@ -76,3 +90,11 @@ class IntentFineScoreItem(BaseModel):
 
 class IntentFineMultiOutput(BaseModel):
     items: list[IntentFineScoreItem] = Field(default_factory=list)
+
+
+class KnowledgeQueryPlan(BaseModel):
+    """公共知识问答进子 Agent 前的检索计划。"""
+
+    split: bool = Field(description="是否拆成多个独立 query")
+    queries: list[str] = Field(default_factory=list, description="重述后的独立检索句；不拆可为空")
+    final_task: str = Field(description="最后一轮总结的主要任务：直接回答、分述、比较、交集、因果")

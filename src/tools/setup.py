@@ -11,6 +11,7 @@ from tools.toolkits import (
     REPORT_TOOLKIT,
     SAFETY_TOOLKIT,
     TASK_TOOLKIT,
+    TONGUE_TOOLKIT,
 )
 
 __all__ = ["INTENT_BIND", "register_all"]
@@ -32,10 +33,12 @@ INTENT_BIND: dict[tuple[str, str], tuple[str, ...]] = {
     ("公共知识问答", "kg_symptom_care"): _HANDBOOK,
     ("公共知识问答", "kg_handbook_general"): _HANDBOOK_THEN_CHROMA,
     ("公共知识问答", ""): KNOWLEDGE_TOOLKIT.names(),
-    ("个人记忆问答", "mem_stated_consult"): MEMORY_TOOLKIT.pick("lookup_stated_consult"),
-    ("个人记忆问答", "mem_companion_fact"): MEMORY_TOOLKIT.pick("lookup_life_facts"),
+    ("个人记忆问答", "mem_time_to_entity"): MEMORY_TOOLKIT.pick("query_personal_memory"),
+    ("个人记忆问答", "mem_entity_to_time"): MEMORY_TOOLKIT.pick("query_personal_memory"),
     ("个人记忆问答", "mem_session_recall"): (),
-    ("个人记忆问答", ""): MEMORY_TOOLKIT.pick("lookup_stated_consult", "lookup_life_facts"),
+    ("个人记忆问答", ""): MEMORY_TOOLKIT.pick("query_personal_memory"),
+    ("图片识别解析", "tongue_recognize"): TONGUE_TOOLKIT.pick("diagnose_tongue"),
+    ("图片识别解析", ""): TONGUE_TOOLKIT.names(),
     ("近况陈述", "file_image"): FILE_TOOLKIT.pick("describe_uploaded_image"),
     ("近况陈述", "file_document"): FILE_TOOLKIT.pick("describe_uploaded_document"),
     ("近况陈述", ""): MEMORY_TOOLKIT.pick("search_long_memory", "lookup_life_facts"),
@@ -46,6 +49,7 @@ INTENT_BIND: dict[tuple[str, str], tuple[str, ...]] = {
     ("报告指标解读", "report_tables"): REPORT_TOOLKIT.pick("extract_report_tables"),
     ("报告指标解读", "report_explain"): REPORT_TOOLKIT.pick("explain_mentioned_report"),
     ("报告指标解读", "report_compare"): REPORT_TOOLKIT.pick("compare_lab_history"),
+    ("报告指标解读", "report_sync"): REPORT_TOOLKIT.pick("start_lab_report_sync", "poll_lab_report_sync"),
     ("报告指标解读", ""): REPORT_TOOLKIT.names(),
     ("具体任务", "task_remind"): TASK_TOOLKIT.pick("note_task_remind"),
     ("具体任务", "task_checkin"): TASK_TOOLKIT.pick("note_task_checkin"),

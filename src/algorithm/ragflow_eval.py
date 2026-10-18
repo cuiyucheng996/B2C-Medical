@@ -12,7 +12,7 @@ from algorithm.ragflow_kb import ping_ragflow, replace_pdf
 
 __all__ = ["run_ragflow_ingest_eval"]
 
-_EVAL_DIR = B2C_ROOT / "data" / "eval_ingest"
+_EVAL_DIR = B2C_ROOT / "tests" / "eval_ingest"
 _MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -151,9 +151,9 @@ def run_ragflow_ingest_eval(
                 "写入 RAGFlow",
                 False,
                 (
-                    "按评测选项跳过（只跑本地分块，不动 RAGFlow 库）。本地块已落 exam_kb。"
+                    "按评测选项跳过（只跑本地分块，不动 RAGFlow 库）。本地块已落 local_vector_db。"
                     if skip_ragflow
-                    else "未写入（服务未通或跳过）。本地块已落 exam_kb。"
+                    else "未写入（服务未通或跳过）。本地块已落 local_vector_db。"
                 ),
             )
         )

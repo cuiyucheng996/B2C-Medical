@@ -1,4 +1,4 @@
-"""意图清单唯一数据源：data/intent_catalog.yaml → catalog / rules / 训练模板。"""
+"""意图清单唯一数据源：middleware_third_party/intent_catalog.yaml。"""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from configs.paths_b2c import B2C_ROOT
+from configs.data_paths import INTENT_CATALOG_PATH
 
-_MANIFEST_PATH = B2C_ROOT / "data" / "intent_catalog.yaml"
+_MANIFEST_PATH = INTENT_CATALOG_PATH
 
 __all__ = [
     "intent_manifest_path",

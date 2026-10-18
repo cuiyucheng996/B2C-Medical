@@ -52,6 +52,15 @@ class CompanionFactRecord(TypedDict, total=False):
     kind: CompanionFactKind
     negated: bool
     last_said: str
+    finding_id: str
+
+
+class LinkedCompanionFact(TypedDict, total=False):
+    id: str
+    name: str
+    fact: str
+    kind: str
+    negated: bool
 
 
 class FindingRecord(TypedDict, total=False):
@@ -63,7 +72,9 @@ class FindingRecord(TypedDict, total=False):
     thread_id: str
     source: FindingSource
     created_at: str
+    memory_date: str
     extracts: list[ExtractedLink]
+    linked_facts: list[LinkedCompanionFact]
 
 
 class UserMemoryCard(TypedDict, total=False):

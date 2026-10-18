@@ -134,13 +134,21 @@ def query_consult_graph(
     except Exception as exc:
         logger.exception("kg graph query failed handler=%s", name)
         return _pack(name, seeds, [], f"查询失败：{exc}", "neo4j", alignments=used_alignments)
+    hops = _one_hop_lines(driver, db, _aligned_names(used_alignments) or seeds)
+    ranked = _rank_handler_overlap(driver, db, name, seeds, query)
+    ranked.extend(_ranked_business_paths(driver, db, used_mentions))
+    items = list(dict.fromkeys([*ranked, *items, *hops]))
     pack = _pack(name, seeds, items, _summarize(name, seeds, items), "neo4j", alignments=used_alignments)
     try:
         from algorithm.rag.config import is_rag_enhanced
         from algorithm.rag.pipeline import enhance_graph_pack
 
         if is_rag_enhanced():
-            return enhance_graph_pack(pack, query=query, handler=name)
+            pack = enhance_graph_pack(pack, query=query, handler=name)
+            front = [line for line in ranked if line in set(pack.get("items") or [])]
+            rest = [line for line in list(pack.get("items") or []) if line not in set(front)]
+            pack["items"] = (front + rest)[:24]
+            return pack
     except Exception:
         logger.warning("rag graph enhance failed", exc_info=True)
     return pack
@@ -153,47 +161,34 @@ def search_exam_handbook(
     alignments: list[dict[str, Any]] | None = None,
     handler: str = "",
 ) -> dict[str, Any]:
-    """只查 RAGFlow / 本地检查手册分块。"""
-    name = (handler or "").strip() or "kg_exam_meaning"
-    try:
-        from algorithm.rag.config import is_rag_enhanced
-        from algorithm.rag.pipeline import run_rag_pipeline
+    """实现在 server/builtin_server/report_read/handbook.py。"""
+    import sys
+    from pathlib import Path
 
-        if is_rag_enhanced():
-            return run_rag_pipeline(
-                "handbook",
-                query=query,
-                handler=name,
-                mentions=mentions,
-                alignments=alignments,
-            )
-    except Exception:
-        logger.warning("rag handbook pipeline failed", exc_info=True)
-    seeds = _resolve_seeds(name, query, mentions or {}, alignments or [])
-    needles = list(dict.fromkeys([*seeds, (query or "").strip()]))
-    items = retrieve_chunks(" ".join(item for item in needles if item)[:200])
-    return _pack(name, seeds, items, _summarize(name, seeds, items), "ragflow", alignments=alignments or [])
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from server.builtin_server.report_read.handbook import search_exam_handbook as run
+
+    return run(query=query, mentions=mentions, alignments=alignments, handler=handler)
 
 
 def search_chroma_knowledge(
     *,
     query: str,
     handler: str = "",
+    alignments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """只查 Chroma 疾病/症状向量。"""
-    name = (handler or "").strip() or "fallback"
-    text = (query or "").strip()
-    try:
-        from algorithm.rag.config import is_rag_enhanced
-        from algorithm.rag.pipeline import run_rag_pipeline
+    """实现在 server/builtin_server/report_read/handbook.py。"""
+    import sys
+    from pathlib import Path
 
-        if is_rag_enhanced():
-            return run_rag_pipeline("chroma", query=text, handler=name)
-    except Exception:
-        logger.warning("rag chroma pipeline failed", exc_info=True)
-    items = _chroma_snips(text)
-    seeds = [text] if len(text) >= 2 else []
-    return _pack(name, seeds, items, _summarize(name, seeds, items), "chroma")
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from server.builtin_server.report_read.handbook import search_chroma_knowledge as run
+
+    return run(query=query, handler=handler, alignments=alignments)
 
 
 def _pack(
@@ -251,6 +246,256 @@ def slim_handbook_pack_for_agent(pack: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _mention_list(mentions: dict[str, list[str]], key: str) -> list[str]:
+    raw = mentions.get(key) if isinstance(mentions, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))[:6]
+
+
+def _user_finding_blob(driver: Any, db: str) -> str:
+    try:
+        from tools.companion_memory import companion_user_id
+    except Exception:
+        return ""
+    uid = str(companion_user_id.get() or "").strip()
+    if not uid:
+        return ""
+    rows = _query(
+        driver,
+        db,
+        """
+        MATCH (u:UserInfo)-[:HAVE]->(f:Finding)
+        WHERE toString(u.id) = $user_id
+        RETURN f.raw_text AS raw_text
+        ORDER BY f.created_at DESC
+        LIMIT 8
+        """,
+        {"user_id": uid},
+    )
+    return " ".join(str(row.get("raw_text") or "") for row in rows)
+
+
+def _char_jaccard(left: str, right: str) -> float:
+    a = {ch for ch in left if not ch.isspace()}
+    b = {ch for ch in right if not ch.isspace()}
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    dot = sum(x * y for x, y in zip(left, right, strict=False))
+    na = sum(x * x for x in left) ** 0.5
+    nb = sum(y * y for y in right) ** 0.5
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _blend_path_scores(query: str, scored: list[tuple[float, str]]) -> list[str]:
+    """票数为主；语义相似度拉开接近的票，字符 Jaccard 只做最后的同分。"""
+    if not scored:
+        return []
+    ask = (query or "").strip()
+    vectors: list[list[float]] = []
+    try:
+        from configs.paths_b2c import ensure_uvgraph_root
+
+        ensure_uvgraph_root()
+        from src.embeddings import get_embeddings
+
+        emb = get_embeddings()
+        qv = emb.embed_query(ask) if ask else []
+        docs = emb.embed_documents([line for _vote, line in scored])
+        if qv and len(docs) == len(scored):
+            vectors = [list(qv), *[list(item) for item in docs]]
+    except Exception:
+        logger.debug("graph path embed failed", exc_info=True)
+        vectors = []
+    blended: list[tuple[float, float, float, str]] = []
+    qv = vectors[0] if vectors else []
+    for idx, (vote, line) in enumerate(scored):
+        semantic = _cosine(qv, vectors[idx + 1]) if qv and idx + 1 < len(vectors) else 0.0
+        overlap = _char_jaccard(ask, line) if ask else 0.0
+        blended.append((vote + semantic, overlap, vote, line))
+    blended.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+    out: list[str] = []
+    for _mix, _overlap, _vote, line in blended:
+        if line not in out:
+            out.append(line)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _rank_handler_overlap(
+    driver: Any,
+    db: str,
+    handler: str,
+    seeds: list[str],
+    query: str = "",
+) -> list[str]:
+    """多个标准入口各查一次，被更多入口同时召回的目标排前面。"""
+    names = [item for item in seeds if item][:4]
+    if len(names) < 2:
+        return []
+    history = _user_finding_blob(driver, db)
+    scored: list[tuple[float, str]] = []
+    if handler in {"kg_symptom_parts", "kg_symptom_care"}:
+        rows = _query(
+            driver,
+            db,
+            """
+            UNWIND $seeds AS sym
+            MATCH (s:ConsultPrimarySymptom)-[:BELONG|Belong]-(d:ConsultDisease)-[:BELONG|Belong]-(p:ConsultBodyPart)
+            WHERE s.symptom_name = sym OR s.symptom_name CONTAINS sym OR sym CONTAINS s.symptom_name
+            RETURN sym AS seed, p.part_name AS target, d.disease_name AS via
+            LIMIT 40
+            """,
+            {"seeds": names},
+        )
+        grouped: dict[str, set[str]] = {}
+        via: dict[str, str] = {}
+        for row in rows:
+            target = str(row.get("target") or "").strip()
+            seed = str(row.get("seed") or "").strip()
+            if not target or not seed:
+                continue
+            grouped.setdefault(target, set()).add(seed)
+            if row.get("via") and target not in via:
+                via[target] = str(row.get("via") or "").strip()
+        for target, got in grouped.items():
+            line = f"{'/'.join(sorted(got))}—{target}" + (f"—{via[target]}" if via.get(target) else "")
+            score = float(len(got))
+            if history and target in history:
+                score += 2.0
+                line = "与既往记录重合：" + line
+            scored.append((score, line))
+    elif handler == "kg_part_diseases":
+        rows = _query(
+            driver,
+            db,
+            """
+            UNWIND $seeds AS part_name
+            MATCH (p:ConsultBodyPart)-[:BELONG|Belong]-(d:ConsultDisease)
+            WHERE p.part_name = part_name OR p.part_name CONTAINS part_name OR part_name CONTAINS p.part_name
+            RETURN part_name AS seed, d.disease_name AS target
+            LIMIT 40
+            """,
+            {"seeds": names},
+        )
+        grouped = {}
+        for row in rows:
+            target = str(row.get("target") or "").strip()
+            seed = str(row.get("seed") or "").strip()
+            if target and seed:
+                grouped.setdefault(target, set()).add(seed)
+        for target, got in grouped.items():
+            line = f"{'/'.join(sorted(got))}—{target}"
+            score = float(len(got))
+            if history and target in history:
+                score += 2.0
+                line = "与既往记录重合：" + line
+            scored.append((score, line))
+    elif handler in {"kg_disease_symptoms", "kg_disease_plain"}:
+        rows = _query(
+            driver,
+            db,
+            """
+            UNWIND $seeds AS dis
+            MATCH (d:ConsultDisease)-[:BELONG|Belong]-(s:ConsultPrimarySymptom)
+            WHERE d.disease_name = dis OR d.disease_name CONTAINS dis OR dis CONTAINS d.disease_name
+            RETURN dis AS seed, s.symptom_name AS target
+            LIMIT 40
+            """,
+            {"seeds": names},
+        )
+        grouped = {}
+        for row in rows:
+            target = str(row.get("target") or "").strip()
+            seed = str(row.get("seed") or "").strip()
+            if target and seed:
+                grouped.setdefault(target, set()).add(seed)
+        for target, got in grouped.items():
+            line = f"{'/'.join(sorted(got))}—{target}"
+            score = float(len(got))
+            if history and any(name in history for name in got):
+                score += 2.0
+                line = "与既往记录重合：" + line
+            scored.append((score, line))
+    elif handler == "kg_syndrome_signs":
+        rows = _query(
+            driver,
+            db,
+            """
+            UNWIND $seeds AS syn
+            MATCH (st:SyndromeType)-[:BELONG|Belong]-(d:ConsultDisease)-[:BELONG|Belong]-(s:ConsultPrimarySymptom)
+            WHERE st.main_symptoms CONTAINS syn OR d.disease_name CONTAINS syn
+            RETURN syn AS seed, s.symptom_name AS target
+            LIMIT 40
+            """,
+            {"seeds": names},
+        )
+        grouped = {}
+        for row in rows:
+            target = str(row.get("target") or "").strip()
+            seed = str(row.get("seed") or "").strip()
+            if target and seed:
+                grouped.setdefault(target, set()).add(seed)
+        for target, got in grouped.items():
+            line = f"{'/'.join(sorted(got))}—{target}"
+            score = float(len(got))
+            scored.append((score, line))
+    return _blend_path_scores(query, scored)
+
+
+def _ranked_business_paths(
+    driver: Any,
+    db: str,
+    mentions: dict[str, list[str]],
+) -> list[str]:
+    """检查或指标名落到病/部位，以及和用户 Finding 重合的路径，只留前 3 条。"""
+    exams = _mention_list(mentions, "指标") + _mention_list(mentions, "检查")
+    if not exams:
+        return []
+    history = _user_finding_blob(driver, db)
+    scored: list[tuple[float, str]] = []
+    for exam in exams[:3]:
+        rows = _query(
+            driver,
+            db,
+            """
+            MATCH (d:ConsultDisease)-[:BELONG|Belong]-(p:ConsultBodyPart)
+            WHERE d.disease_name CONTAINS $exam OR p.part_name CONTAINS $exam
+            RETURN d.disease_name AS disease, p.part_name AS part
+            LIMIT 12
+            """,
+            {"exam": exam[:40]},
+        )
+        for row in rows:
+            disease = str(row.get("disease") or "").strip()
+            part = str(row.get("part") or "").strip()
+            if not disease:
+                continue
+            line = f"{exam}—{disease}—{part}"
+            score = 1.5
+            if history and (disease in history or (part and part in history)):
+                score += 2.0
+                line = "与既往记录重合：" + line
+            scored.append((score, line))
+    scored.sort(key=lambda item: -item[0])
+    out: list[str] = []
+    for _score, line in scored:
+        if line not in out:
+            out.append(line)
+        if len(out) >= 3:
+            break
+    return out
+
+
 def _resolve_seeds(
     handler: str,
     query: str,
@@ -280,6 +525,58 @@ def _resolve_seeds(
     guessed = _guess_seed(query)
     names.extend(guessed)
     return list(dict.fromkeys(item for item in names if item))[:6]
+
+
+def _aligned_names(alignments: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for hit in alignments or []:
+        if not isinstance(hit, dict):
+            continue
+        name = str(hit.get("standard_name") or hit.get("mention") or "").strip()
+        if name:
+            names.append(name)
+    return list(dict.fromkeys(names))[:8]
+
+
+def _prefer_aligned_items(items: list[str], names: list[str]) -> list[str]:
+    """有标准名时只留正文里出现这些名字的片段；一条都对不上则保留原结果。"""
+    rows = [str(item).strip() for item in items if str(item).strip()]
+    if not names:
+        return rows
+    kept = [row for row in rows if any(name in row for name in names)]
+    return kept or rows
+
+
+def _one_hop_lines(driver: Any, db: str, seeds: list[str]) -> list[str]:
+    """对齐实体在问诊图上走一跳，写成「左—右」短句。"""
+    lines: list[str] = []
+    for seed in seeds[:4]:
+        token = (seed or "").strip()
+        if len(token) < 2:
+            continue
+        try:
+            rows = _query(
+                driver,
+                db,
+                """
+                MATCH (a)-[:BELONG|Belong]-(b)
+                WHERE coalesce(a.part_name, a.disease_name, a.symptom_name, '') = $seed
+                   OR coalesce(a.part_name, a.disease_name, a.symptom_name, '') CONTAINS $seed
+                RETURN coalesce(a.part_name, a.disease_name, a.symptom_name, '') AS left_name,
+                       coalesce(b.part_name, b.disease_name, b.symptom_name, '') AS right_name
+                LIMIT 6
+                """,
+                {"seed": token[:40]},
+            )
+        except Exception:
+            logger.debug("one-hop skipped seed=%s", token, exc_info=True)
+            continue
+        for row in rows:
+            left = str(row.get("left_name") or "").strip()
+            right = str(row.get("right_name") or "").strip()
+            if left and right and left != right:
+                lines.append(f"{left}—{right}")
+    return list(dict.fromkeys(lines))[:8]
 
 
 def _guess_seed(query: str) -> list[str]:

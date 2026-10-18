@@ -61,7 +61,7 @@ def run_intent_one(
     if mode == "bert" and not major_bert_available():
         return {
             "ok": False,
-            "reason": "BERT 大意图模型不可用，请放置 checkpoint/intent_major/best_model",
+            "reason": "BERT 大意图模型不可用，请放置 model/checkpoint/intent_major/best_model",
         }
     turn = resolve_companion_turn(
         raw,

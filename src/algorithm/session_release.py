@@ -67,7 +67,16 @@ def release_companion_session(
     ).release_session_runtime_state
     merge_user_ui_draft = import_b2c_algorithm("user_ui_draft").merge_user_ui_draft
 
-    ingest = persist_session_findings(session)
+    from server.builtin_server.jobs.queue import async_heavy_enabled, enqueue
+
+    if async_heavy_enabled():
+        job_id = enqueue(
+            "session_persist",
+            {"snapshot": session.to_dict(), "reason": reason},
+        )
+        ingest = {"ok": True, "deferred": True, "job_id": job_id}
+    else:
+        ingest = persist_session_findings(session)
     patch = chat_draft_patch_from_session(session)
     patch["chat"]["release_reason"] = reason
     merge_user_ui_draft(session.user_id, patch)

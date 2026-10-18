@@ -220,7 +220,7 @@ class Trainer:
 
 if __name__ == '__main__':
     model = SpellCheckBert()
-    dataset_dict = load_from_disk(str(config.DATA_DIR / 'spell_check/processed/bert'))
+    dataset_dict = load_from_disk(str(config.MODEL_ROOT / "datasets" / "spell_check" / "processed" / "bert"))
     training_config = TrainingConfig(
         output_dir=config.CHECKPOINT_DIR / 'spell_check_bert',
         logs_dir=config.ROOT_DIR / 'logs' / 'spell_check_bert',

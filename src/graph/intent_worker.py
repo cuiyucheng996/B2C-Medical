@@ -105,9 +105,22 @@ async def execute_node(state: IntentWorkerState) -> dict[str, Any]:
     hint = str(state.get("review_hint") or "").strip()
     if hint:
         observe = f"{observe}\n\n【评审打回】{hint}"
+    if str(task.get("major") or "") == "公共知识问答" and int(state.get("review_round") or 0) == 0:
+        from algorithm.kg_query_plan import format_query_plan_observe, plan_knowledge_queries
+
+        plan = plan_knowledge_queries(model, str(state.get("query") or ""))
+        observe = f"{observe}\n\n{format_query_plan_observe(plan)}"
+    if str(task.get("handler") or "") == "report_sync":
+        from algorithm.lab_report_entities import extract_lab_sync_entities, format_lab_sync_observe
+
+        lab_entities = extract_lab_sync_entities(str(state.get("query") or ""))
+        observe = f"{observe}\n\n{format_lab_sync_observe(lab_entities)}"
+    else:
+        lab_entities = {}
     turn = {
         **dict(state.get("base_turn") or {}),
         "handler": task.get("handler") or (state.get("base_turn") or {}).get("handler") or "",
+        "lab_sync_entities": lab_entities,
     }
     handler = str(task.get("handler") or "")
     local = list(tools_for_intent(major=str(task.get("major") or ""), handler=handler))

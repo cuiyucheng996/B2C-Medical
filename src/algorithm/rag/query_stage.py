@@ -19,9 +19,10 @@ def expand_queries(
     if not config.enhanced or not config.multi_query:
         return [base]
     out: list[str] = [base]
-    seed_line = " ".join(str(s).strip() for s in seeds if str(s).strip())[:200]
-    if seed_line and seed_line != base:
-        out.append(seed_line)
+    for seed in seeds:
+        token = str(seed or "").strip()[:80]
+        if token and token != base:
+            out.append(token)
     compact = base.replace("请问", "").replace("帮我查", "").strip()
     if compact and compact != base and len(compact) >= 4:
         out.append(compact)
@@ -31,4 +32,6 @@ def expand_queries(
         if item not in seen:
             seen.add(item)
             dedup.append(item)
-    return dedup[: max(1, config.max_queries)]
+    # 每个实体单独一路，不被 max_queries 把后面的实体裁掉；总路数最多 6。
+    keep = max(1, config.max_queries, min(len(dedup), 6))
+    return dedup[:keep]

@@ -26,7 +26,13 @@ from .proxy import ensure_local_no_proxy
 CONFIG_DIR = Path(__file__).parent
 # B2C 独立仓：配置与 .env 在 B2C business 根目录（vendor/uvgraph/src/configs → parents[4]）
 B2C_BUSINESS_ROOT = Path(__file__).resolve().parents[4]
-CONFIG_PATH = B2C_BUSINESS_ROOT / "config.yaml"
+CONFIG_PATH = (
+    B2C_BUSINESS_ROOT
+    / "data"
+    / "dev_resources"
+    / "middleware_third_party"
+    / "config.yaml"
+)
 PROJECT_ROOT = B2C_BUSINESS_ROOT
 ENV_FILE = B2C_BUSINESS_ROOT / ".env"
 

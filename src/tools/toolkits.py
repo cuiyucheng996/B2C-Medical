@@ -19,6 +19,7 @@ __all__ = [
     "REPORT_TOOLKIT",
     "SAFETY_TOOLKIT",
     "TASK_TOOLKIT",
+    "TONGUE_TOOLKIT",
 ]
 
 
@@ -53,6 +54,7 @@ SAFETY_TOOLKIT = CompanionToolkit(name="safety", items=items_for_domain("safety"
 KNOWLEDGE_TOOLKIT = CompanionToolkit(name="knowledge", items=items_for_domain("knowledge"))
 MEMORY_TOOLKIT = CompanionToolkit(name="memory", items=items_for_domain("memory"))
 FILE_TOOLKIT = CompanionToolkit(name="file", items=items_for_domain("file"))
+TONGUE_TOOLKIT = CompanionToolkit(name="tongue", items=items_for_domain("tongue"))
 REPORT_TOOLKIT = CompanionToolkit(name="report", items=items_for_domain("report"))
 TASK_TOOLKIT = CompanionToolkit(name="task", items=items_for_domain("task"))
 
@@ -61,6 +63,7 @@ ALL_TOOLKITS: tuple[CompanionToolkit, ...] = (
     KNOWLEDGE_TOOLKIT,
     MEMORY_TOOLKIT,
     FILE_TOOLKIT,
+    TONGUE_TOOLKIT,
     REPORT_TOOLKIT,
     TASK_TOOLKIT,
 )

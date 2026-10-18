@@ -8,7 +8,13 @@ from pathlib import Path
 def _discover_project_root() -> Path:
     here = Path(__file__).resolve()
     for ancestor in here.parents:
-        if (ancestor / "config.yaml").is_file():
+        if (
+            ancestor
+            / "data"
+            / "dev_resources"
+            / "middleware_third_party"
+            / "config.yaml"
+        ).is_file():
             return ancestor
     return here.parents[2]
 

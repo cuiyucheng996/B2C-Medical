@@ -23,7 +23,7 @@ dependencies = [
     "sqlalchemy>=2.0.51",
     "chromadb>=1.5.9",
     "langchain-chroma>=1.1.0",
-    "pyyaml>=6.0.3",
+    "pyyaml>=6.0.2",
     "unstructured>=0.24.1",
     "markdown>=3.10.2",
     "pi-heif>=1.4.0",
@@ -53,6 +53,9 @@ dependencies = [
     "alibabacloud-tea-openapi>=0.4.6",
     "oss2>=2.19.1",
     "langgraph-supervisor>=0.0.31",
+    "paddlepaddle-gpu>=3.0; sys_platform == 'win32'",
+    "paddlex>=3.0",
+    "label-studio>=1.16",
 ]
 
 [[tool.uv.index]]
@@ -64,5 +67,33 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
+[[tool.uv.index]]
+name = "paddle-cu126"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+explicit = true
+
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
+paddlepaddle-gpu = { index = "paddle-cu126" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+observability = [
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "integration: 需要本机 Neo4j / Redis 等服务",
+]
+
+[tool.uv]
+override-dependencies = ["redis>=8.0.1", "openai>=2.45.0"]

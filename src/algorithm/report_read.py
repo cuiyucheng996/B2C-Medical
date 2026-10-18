@@ -8,6 +8,7 @@ from typing import Any
 __all__ = [
     "compare_lab_history",
     "explain_mentioned_report",
+    "collect_report_facts",
     "explain_uploaded_report",
 ]
 
@@ -61,6 +62,23 @@ def _match_indicators(indicators: list[dict[str, Any]], metric: str) -> list[dic
     return hits[:8]
 
 
+def collect_report_facts(
+    *,
+    last_report: dict[str, Any] | None = None,
+    last_file: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """抽指标逻辑在专属服务 server/builtin_server/report_read/logic.py。"""
+    import sys
+    from pathlib import Path
+
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from server.builtin_server.report_read.logic import collect_report_facts as run
+
+    return run(last_report=last_report, last_file=last_file)
+
+
 def explain_uploaded_report(
     *,
     query: str = "",
@@ -68,101 +86,30 @@ def explain_uploaded_report(
     last_file: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """预处理判定报告解读且给了 PDF：MinerU 拆该 PDF；否则只用切块抽指标。"""
-    from pathlib import Path
-
-    from algorithm.report_ingest import _extract_indicators, _pdf_extract_module, mineru_split_tables_cached
-
-    report = last_report if isinstance(last_report, dict) else {}
-    file_row = last_file if isinstance(last_file, dict) else {}
-    chunks = list(file_row.get("chunks") or report.get("chunks") or [])
-    titles = list(file_row.get("titles") or report.get("titles") or [])
-    tables = list(file_row.get("tables") or report.get("tables") or [])
-    body = str(file_row.get("body") or "")
-    parse_source = str(file_row.get("parse_source") or report.get("parse_source") or "")
-    filename = str(file_row.get("filename") or report.get("filename") or "")
-    saved = str(file_row.get("saved_path") or report.get("saved_path") or "")
-    table_count = int(file_row.get("table_count") or report.get("table_count") or 0)
-    if not tables:
-        tables = [
-            str(item.get("html") or item.get("text") or "")
-            for item in chunks
-            if str(item.get("category") or "") == "Table"
-        ]
-        tables = [item for item in tables if item]
-    if not table_count:
-        table_count = sum(1 for item in chunks if str(item.get("category") or "") == "Table") or len(tables)
-    if not titles:
-        titles = [
-            str(item.get("text") or "")
-            for item in chunks
-            if str(item.get("category") or "") in {"Title", "Header", "Headline"}
-        ]
-        titles = [item for item in titles if item]
-    if not body.strip():
-        body = "\n".join(
-            str(item.get("text") or "")
-            for item in chunks
-            if str(item.get("category") or "") not in {"Title", "Header", "Headline", "Table", "Image", "Figure", "Picture"}
-            and str(item.get("text") or "").strip()
-        )
-    table_json: list[dict] = []
-    indicators = list(file_row.get("indicators") or report.get("indicators") or [])
-    mineru_pdf = str(file_row.get("mineru_pdf_path") or report.get("mineru_pdf_path") or "")
-    pdf_path = Path(mineru_pdf) if mineru_pdf else None
-    cache_row = file_row if isinstance(file_row, dict) else {}
-    if pdf_path is not None and pdf_path.is_file() and pdf_path.suffix.lower() == ".pdf":
-        try:
-            table_json, pulled, mineru_source = mineru_split_tables_cached(pdf_path, cache_row)
-            if pulled:
-                indicators = pulled
-            if mineru_source:
-                parse_source = mineru_source
-        except Exception:
-            table_json = []
-    if not table_json and tables:
-        to_json = getattr(_pdf_extract_module(), "table_to_json", None)
-        if to_json:
-            table_json = [to_json(item) for item in tables]
-        if not indicators:
-            indicators = _extract_indicators(tables, body)
-    if not filename and not indicators and not chunks and not tables and not table_json:
+    facts = collect_report_facts(last_report=last_report, last_file=last_file)
+    if facts.get("empty"):
         return {
             "summary": "本轮没有上传检查报告",
             "report": {},
             "items": [],
             "empty": True,
         }
-    names = [str(item.get("name") or "") for item in indicators[:12] if item.get("name")]
+    names = list(facts.get("indicator_names") or [])
+    filename = str(facts.get("filename") or "")
     q = (query or "").strip() or " ".join(names[:8]) or filename or "化验单"
     kb = _handbook(q[:200], "report_upload")
     items = list(kb.get("items") or [])
     bits = [f"已解读 {filename or '报告'}"]
-    if table_json:
-        bits.append(f"结构化表 {len(table_json)} 张")
-    elif table_count:
-        bits.append(f"表区域 {table_count} 处")
-    bits.append(f"抽出 {len(indicators)} 条指标")
+    if facts.get("table_json_count"):
+        bits.append(f"结构化表 {facts.get('table_json_count')} 张")
+    elif facts.get("table_count"):
+        bits.append(f"表区域 {facts.get('table_count')} 处")
+    bits.append(f"抽出 {facts.get('indicator_count')} 条指标")
     if items:
         bits.append(f"手册命中 {len(items)} 条")
-    uid = str(file_row.get("user_id") or (chunks[0].get("user_id") if chunks else "") or "")
-    out_report = {
-        "filename": filename,
-        "saved_path": saved,
-        "mineru_pdf_path": mineru_pdf,
-        "user_id": uid,
-        "parse_source": parse_source or "preprocess_layout",
-        "titles": titles[:8],
-        "indicators": indicators[:25],
-        "tables": table_json[:8],
-        "table_count": len(table_json) or table_count,
-        "chunk_count": len(chunks),
-        "chunks": chunks[:40],
-        "markdown_preview": str(file_row.get("markdown_preview") or report.get("markdown_preview") or "")[:800],
-        "user_text": str(file_row.get("user_text") or report.get("user_text") or "")[:2000],
-    }
     return {
         "summary": "，".join(bits),
-        "report": out_report,
+        "report": facts.get("report") or {},
         "items": items[:16],
         "kb_source": kb.get("source") or "",
         "empty": False,

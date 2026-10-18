@@ -36,9 +36,9 @@ def get_doccano_config() -> dict[str, Any]:
     host = str(cfg.get("host", "localhost"))
     url = str(cfg.get("url") or f"http://{host}:{port}")
 
-    samples_dir = resolve_doccano_path(cfg.get("samples_dir", "data/uie/doccano/samples"))
-    export_dir = resolve_doccano_path(cfg.get("export_dir", "data/uie/doccano/export"))
-    uie_train_dir = resolve_doccano_path(cfg.get("uie_train_dir", "data/uie/train"))
+    samples_dir = resolve_doccano_path(cfg.get("samples_dir", "model/datasets/uie/doccano/samples"))
+    export_dir = resolve_doccano_path(cfg.get("export_dir", "model/datasets/uie/doccano/export"))
+    uie_train_dir = resolve_doccano_path(cfg.get("uie_train_dir", "model/datasets/uie/train"))
 
     span_labels = cfg.get("span_labels") or ["部位", "疾病", "症状"]
     if not isinstance(span_labels, list):

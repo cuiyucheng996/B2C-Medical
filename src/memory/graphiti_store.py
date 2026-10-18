@@ -39,20 +39,26 @@ def add_episode(
     ensure_uvgraph_root()
     from src.algorithm.user_memory import ingest_finding
     from algorithm.fact_extract import extract_companion_facts
+    from algorithm.graphiti_neo4j_extract import (
+        extract_graphiti_neo4j,
+        merge_finding_links,
+    )
 
     body = text
     if body.lower().startswith("user(") and ":" in body:
         body = body.split(":", 1)[1].strip() or text
 
-    facts = list(extra_facts or [])
+    g_links, g_facts = extract_graphiti_neo4j(body, at=said_at)
+    facts = list(extra_facts or []) + list(g_facts)
     facts.extend(extract_companion_facts(body, at=said_at, skip_entity=skip_entity))
+    links = merge_finding_links(body, extra_links, g_links)
     return ingest_finding(
         user_id=uid,
         raw_text=body,
         source="chat",
         kind="text",
         extra_facts=facts,
-        extra_links=extra_links,
+        extra_links=links,
     )
 
 

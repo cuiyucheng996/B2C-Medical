@@ -102,10 +102,7 @@
     if (!el) return;
     const uid = getUserId();
     el.innerHTML =
-      '当前用户 <strong>' +
-      (uid ? escapeHtml(uid) : "未登录") +
-      "</strong> · " +
-      '<a href="/">切换账号</a>';
+      "当前用户 <strong>" + (uid ? escapeHtml(uid) : "未登录") + "</strong>";
   }
 
   function escapeHtml(s) {

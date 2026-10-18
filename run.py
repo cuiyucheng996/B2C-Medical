@@ -21,6 +21,8 @@ B2C_SRC = B2C_ROOT / "src"
 
 if str(B2C_SRC) not in sys.path:
     sys.path.insert(0, str(B2C_SRC))
+if str(B2C_ROOT) not in sys.path:
+    sys.path.insert(0, str(B2C_ROOT))
 
 from configs.paths_b2c import ensure_b2c_runtime_path
 
@@ -33,6 +35,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8002)
     parser.add_argument("--reload", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
+
+    os.environ.setdefault("B2C_SERVICE_NAME", "b2c-companion")
+    os.environ["B2C_SERVICE_PORT"] = str(args.port)
 
     target = "api.server:app"
     print(f"Starting B2C companion -> {target} at http://{args.host}:{args.port}")

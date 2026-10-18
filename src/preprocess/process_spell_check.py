@@ -23,7 +23,7 @@ def process_data(model, save_path):
     # 获取数据
     dataset = load_dataset(
         'csv',
-        data_files=str(config.DATA_DIR / 'spell_check' / 'raw' / 'data.txt'),
+        data_files=str(config.MODEL_ROOT / "datasets" / "spell_check" / "raw" / "data.txt"),
         delimiter=' ',
         header=None,
         column_names=['text', 'label'],
@@ -69,5 +69,5 @@ def process_data(model, save_path):
 if __name__ == '__main__':
     process_data(
         config.PRE_TRAINED_DIR / 'bert-base-chinese',
-        config.DATA_DIR / 'spell_check' / 'processed' / 'bert',
+        config.MODEL_ROOT / "datasets" / "spell_check" / "processed" / "bert",
     )

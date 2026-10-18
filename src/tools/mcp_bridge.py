@@ -88,6 +88,60 @@ def _python_stdio(module: str) -> dict[str, Any]:
     }
 
 
+def _expand_env_token(raw: Any) -> str:
+    val = str(raw or "").strip()
+    if val.startswith("${") and val.endswith("}"):
+        return (os.getenv(val[2:-1].strip()) or "").strip()
+    if val.startswith("$") and len(val) > 1 and not val.startswith("${"):
+        return (os.getenv(val[1:].strip()) or "").strip()
+    return val
+
+
+def _yingdao_rpa_ready(env: dict[str, str]) -> bool:
+    model = (env.get("RPA_MODEL") or os.getenv("RPA_MODEL") or "openApi").strip().lower()
+    if model == "local":
+        bot = (env.get("SHADOWBOT_PATH") or "").strip()
+        folder = (env.get("USER_FOLDER") or "").strip()
+        return bool(bot and folder)
+    key_id = (env.get("ACCESS_KEY_ID") or "").strip()
+    secret = (env.get("ACCESS_KEY_SECRET") or "").strip()
+    return bool(key_id and secret)
+
+
+def _yingdao_stdio_env(spec: dict[str, Any]) -> dict[str, str]:
+    base = _stdio_env(spec.get("env") if isinstance(spec.get("env"), dict) else None)
+    model = (base.get("RPA_MODEL") or os.getenv("RPA_MODEL") or "openApi").strip()
+    base["RPA_MODEL"] = model
+    if model.lower() == "local":
+        base["SHADOWBOT_PATH"] = (
+            base.get("SHADOWBOT_PATH")
+            or (os.getenv("YINGDAO_SHADOWBOT_PATH") or os.getenv("SHADOWBOT_PATH") or "")
+        ).strip()
+        base["USER_FOLDER"] = (
+            base.get("USER_FOLDER") or (os.getenv("YINGDAO_USER_FOLDER") or os.getenv("USER_FOLDER") or "")
+        ).strip()
+    else:
+        base["ACCESS_KEY_ID"] = (
+            base.get("ACCESS_KEY_ID") or (os.getenv("YINGDAO_ACCESS_KEY_ID") or os.getenv("ACCESS_KEY_ID") or "")
+        ).strip()
+        base["ACCESS_KEY_SECRET"] = (
+            base.get("ACCESS_KEY_SECRET")
+            or (os.getenv("YINGDAO_ACCESS_KEY_SECRET") or os.getenv("ACCESS_KEY_SECRET") or "")
+        ).strip()
+    return base
+
+
+def _default_yingdao_mcp_script() -> str:
+    candidates = [
+        (os.getenv("YINGDAO_MCP_SCRIPT") or "").strip(),
+        str(Path(__file__).resolve().parents[2] / "server" / "mcp_server" / "yingdao" / "dist" / "index.js"),
+    ]
+    for item in candidates:
+        if item and Path(item).is_file():
+            return item
+    return (os.getenv("YINGDAO_MCP_SCRIPT") or str(Path(__file__).resolve().parents[2] / "server" / "mcp_server" / "yingdao" / "dist" / "index.js")).strip()
+
+
 def _stdio_env(spec: dict[str, Any] | None) -> dict[str, str]:
     base = dict(os.environ)
     if not isinstance(spec, dict):
@@ -150,12 +204,38 @@ def _connections() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]
         if name == "brave_search" and not (os.getenv("BRAVE_API_KEY") or "").strip():
             logger.info("MCP brave_search 未配置 BRAVE_API_KEY，跳过")
             continue
+        if name == "yingdao_rpa":
+            child_env = _yingdao_stdio_env(spec)
+            if not _yingdao_rpa_ready(child_env):
+                logger.info("MCP yingdao_rpa 未配置 RPA_MODEL/密钥或影刀路径，跳过")
+                continue
+            script = _default_yingdao_mcp_script()
+            if not Path(script).is_file():
+                logger.info("MCP yingdao_rpa 入口不存在（请先 npm run build）：%s", script)
+                continue
+            node = (os.getenv("YINGDAO_NODE") or "").strip() or shutil.which("node") or shutil.which("node.exe")
+            if not node:
+                logger.info("MCP yingdao_rpa 未找到 node（可设 YINGDAO_NODE）")
+                continue
+            conns[name] = {
+                "transport": "stdio",
+                "command": node,
+                "args": [script],
+                "env": child_env,
+            }
+            meta[name] = {
+                "majors": [str(item) for item in (spec.get("majors") or [])],
+                "allow_tools": [str(item) for item in (spec.get("allow_tools") or [])],
+                "agent_expose": bool(spec.get("agent_expose", True)),
+            }
+            continue
         transport = str(spec.get("transport") or "streamable_http").strip()
         url = _resolve_url(spec) or str(spec.get("url") or "").strip()
         command = str(spec.get("command") or "").strip()
         if transport in {"stdio"} and command:
             child_env = _stdio_env(spec.get("env") if isinstance(spec.get("env"), dict) else None)
-            conns[name] = _stdio_conn(command, list(spec.get("args") or []), env=child_env)
+            argv = [_expand_env_token(item) for item in (spec.get("args") or [])]
+            conns[name] = _stdio_conn(command, argv, env=child_env)
         elif url:
             conn: dict[str, Any] = {"transport": transport, "url": url}
             headers = _auth_headers(spec)
@@ -167,6 +247,7 @@ def _connections() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]
         meta[name] = {
             "majors": [str(item) for item in (spec.get("majors") or [])],
             "allow_tools": [str(item) for item in (spec.get("allow_tools") or [])],
+            "agent_expose": bool(spec.get("agent_expose", True)),
         }
     return conns, meta
 
@@ -276,6 +357,8 @@ async def mcp_tools_for_major(major: str) -> list[BaseTool]:
     picked: list[BaseTool] = []
     seen: set[str] = set()
     for server, tools in grouped.items():
+        if not (yaml_meta.get(server) or {}).get("agent_expose", True):
+            continue
         yaml_majors = list((yaml_meta.get(server) or {}).get("majors") or [])
         if server not in allow_by_server and yaml_majors and wanted not in yaml_majors:
             continue

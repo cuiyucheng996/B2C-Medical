@@ -12,4 +12,4 @@ intent: 复述用户在本会话刚说过的话
 2. 从上文 messages 找用户原话如实复述；没有历史就如实说还没记录到。
 
 ## 禁止
-- 不要调 lookup_stated_consult / lookup_life_facts（那是库里长期事实，不是上一句）。
+- 不要调 query_personal_memory（那是 Neo4j 长期记忆，不是上一句）。

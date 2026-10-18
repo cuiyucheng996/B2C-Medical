@@ -53,7 +53,9 @@ def get_b2b_api_config() -> dict[str, Any]:
         "spell_check_use_llm_agent": bool(spell_cfg.get("use_llm_agent", True)),
         "spell_check_use_bert_fallback": bool(spell_cfg.get("use_bert_fallback", True)),
         "spell_check_require_high_confidence": bool(spell_cfg.get("require_high_confidence", True)),
-        "intent_classify_model_dir": str(intent_cfg.get("model_dir", "checkpoint/intent_classify/best_model")),
+        "intent_classify_model_dir": str(
+            intent_cfg.get("model_dir", "model/checkpoint/intent_classify/best_model"),
+        ),
         "intent_classify_confidence_threshold": float(intent_cfg.get("confidence_threshold", 0.7)),
         "intent_classify_max_length": int(intent_cfg.get("max_length", 128)),
         "uie_enabled": bool(uie_cfg.get("enabled", True)),

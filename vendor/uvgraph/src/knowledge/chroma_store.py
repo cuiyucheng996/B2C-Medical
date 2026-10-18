@@ -68,7 +68,7 @@ def _ensure_chroma_http_reachable(host: str, port: int, *, timeout: float) -> No
         persist = chroma_persist_directory()
         raise ConnectionError(
             f"Chroma HTTP {host}:{port} 不可达：{exc}。"
-            f"请先执行 docker compose -f deploy/chroma/docker-compose.yml up -d；"
+            f"请先执行 docker compose -f data/dev_resources/middleware_third_party/middleware/chroma/docker-compose.yml up -d；"
             f"或清空 config.yaml 的 chroma.server_host，改用嵌入式目录 {persist}"
         ) from exc
 

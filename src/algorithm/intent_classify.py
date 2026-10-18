@@ -43,6 +43,7 @@ _MAJORS = (
     "具体任务",
     "个人记忆问答",
     "报告指标解读",
+    "图片识别解析",
     "风险拦截",
     "近况陈述",
     "闲聊",
@@ -61,12 +62,14 @@ class CompanionIntentResult:
     slots: tuple[str, ...]
     handler: str
     recommend_action: str = "正常处理"
-    # 全大类打分：8 个大类各一个 0~1 分，供测试台与阈值判定共用
+    # 全大类打分：每个大类一个 0~1 分，供测试台与阈值判定共用
     major_scores: dict[str, float] = field(default_factory=dict)
 
 
 def _major_model_dir() -> Path:
-    return B2C_ROOT / "checkpoint" / "intent_major" / "best_model"
+    from configs.model_paths import INTENT_MAJOR_WEIGHTS
+
+    return INTENT_MAJOR_WEIGHTS
 
 
 def major_bert_available() -> bool:
@@ -1083,7 +1086,7 @@ def classify_companion_intents_bert(text: str) -> list[CompanionIntentResult]:
                 intent="未知意图",
                 confidence=0.0,
                 source="none",
-                reason="无大意图 BERT 权重（checkpoint/intent_major/best_model）",
+                reason="无大意图 BERT 权重（model/checkpoint/intent_major/best_model）",
             ),
         ]
     packed: list[CompanionIntentResult] = []

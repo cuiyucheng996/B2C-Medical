@@ -1,0 +1,11 @@
+FROM hashicorp/consul-template:0.40.0 AS ct
+FROM nginx:1.27-alpine
+RUN apk add --no-cache ca-certificates
+COPY --from=ct /bin/consul-template /usr/local/bin/consul-template
+COPY upstreams.ctmpl /etc/consul-template/upstreams.ctmpl
+COPY nginx.discovery.conf /etc/nginx/conf.d/default.conf
+COPY entrypoint.discovery.sh /entrypoint.discovery.sh
+RUN chmod +x /entrypoint.discovery.sh
+ENV CONSUL_HTTP_ADDR=host.docker.internal:8500
+EXPOSE 8080
+ENTRYPOINT ["/entrypoint.discovery.sh"]

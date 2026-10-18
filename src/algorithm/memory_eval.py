@@ -31,28 +31,28 @@ _MEM_TOOL_MAP = {str(tool.name): tool for tool in MEMORY_TOOLKIT.get_tools()}
 
 MEM_INTENT_SAMPLES: list[dict[str, Any]] = [
     {
-        "id": "stated_part",
+        "id": "time_entity_food",
+        "text": "我前些天晚上都吃了些什么",
+        "major": "个人记忆问答",
+        "handler": "mem_time_to_entity",
+    },
+    {
+        "id": "time_entity_mood",
+        "text": "上周我心情怎么样你还记得吗",
+        "major": "个人记忆问答",
+        "handler": "mem_time_to_entity",
+    },
+    {
+        "id": "entity_time_part",
         "text": "我说过哪里不舒服",
         "major": "个人记忆问答",
-        "handler": "mem_stated_consult",
+        "handler": "mem_entity_to_time",
     },
     {
-        "id": "stated_disease",
-        "text": "我之前跟你提过什么病",
+        "id": "entity_time_when",
+        "text": "我什么时候说过胃疼",
         "major": "个人记忆问答",
-        "handler": "mem_stated_consult",
-    },
-    {
-        "id": "life_mood",
-        "text": "我上次跟你聊的心情还记得吗",
-        "major": "个人记忆问答",
-        "handler": "mem_companion_fact",
-    },
-    {
-        "id": "life_event",
-        "text": "我跟你说过出差的事吗",
-        "major": "个人记忆问答",
-        "handler": "mem_companion_fact",
+        "handler": "mem_entity_to_time",
     },
     {
         "id": "session_recall",
@@ -70,16 +70,16 @@ MEM_INTENT_SAMPLES: list[dict[str, Any]] = [
 
 MEM_BIND_CASES: list[dict[str, Any]] = [
     {
-        "id": "bind_mem_stated",
+        "id": "bind_mem_time",
         "major": "个人记忆问答",
-        "handler": "mem_stated_consult",
-        "tools": ["lookup_stated_consult"],
+        "handler": "mem_time_to_entity",
+        "tools": ["query_personal_memory"],
     },
     {
-        "id": "bind_mem_life",
+        "id": "bind_mem_entity",
         "major": "个人记忆问答",
-        "handler": "mem_companion_fact",
-        "tools": ["lookup_life_facts"],
+        "handler": "mem_entity_to_time",
+        "tools": ["query_personal_memory"],
     },
     {
         "id": "bind_mem_session_recall",
@@ -91,7 +91,7 @@ MEM_BIND_CASES: list[dict[str, Any]] = [
         "id": "bind_mem_default",
         "major": "个人记忆问答",
         "handler": "",
-        "tools": ["lookup_stated_consult", "lookup_life_facts"],
+        "tools": ["query_personal_memory"],
     },
 ]
 
@@ -111,7 +111,7 @@ def list_memory_handlers() -> list[dict[str, str]]:
             continue
         seen.add(handler)
         rows.append({"handler": handler, "intent": str(item.get("intent") or "")})
-    rows.append({"handler": "默认", "intent": "大类默认（双工具）"})
+    rows.append({"handler": "默认", "intent": "大类默认（query_personal_memory）"})
     return rows
 
 
@@ -283,6 +283,16 @@ def run_memory_tool_probe(
             try:
                 if name == "lookup_stated_consult":
                     out = tool.invoke({})
+                elif name == "query_personal_memory":
+                    out = tool.invoke(
+                        {
+                            "mode": "time_to_entity",
+                            "entity_domain": "life",
+                            "entity_kinds": "thing,mood,event",
+                            "time_hint": raw or "",
+                            "keywords": raw or "",
+                        }
+                    )
                 else:
                     out = tool.invoke({"query": raw or "近况"})
             except Exception as exc:

@@ -1,0 +1,39 @@
+# 由 consul-template 生成；Consul 服务名与 registry_startup 逻辑名一致。
+upstream b2c_vite {
+    server host.docker.internal:5173 max_fails=3 fail_timeout=30s;
+}
+upstream b2c_companion {
+{{ range service "b2c-companion" }}
+    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
+{{ else }}
+    server host.docker.internal:8002 max_fails=3 fail_timeout=30s;
+{{ end }}
+}
+upstream b2c_memory {
+{{ range service "b2c-memory-rag" }}
+    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
+{{ else }}
+    server host.docker.internal:8015 max_fails=3 fail_timeout=30s;
+{{ end }}
+}
+upstream b2c_report {
+{{ range service "b2c-report-read" }}
+    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
+{{ else }}
+    server host.docker.internal:8012 max_fails=3 fail_timeout=30s;
+{{ end }}
+}
+upstream b2c_doc {
+{{ range service "b2c-doc-ingest" }}
+    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
+{{ else }}
+    server host.docker.internal:8013 max_fails=3 fail_timeout=30s;
+{{ end }}
+}
+upstream b2c_crawl {
+{{ range service "b2c-directed-crawl" }}
+    server {{ .Address }}:{{ .Port }} max_fails=3 fail_timeout=30s;
+{{ else }}
+    server host.docker.internal:8014 max_fails=3 fail_timeout=30s;
+{{ end }}
+}

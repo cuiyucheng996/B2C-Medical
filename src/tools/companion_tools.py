@@ -14,6 +14,7 @@ __all__ = [
     "companion_turn",
     "lookup_stated_consult",
     "lookup_life_facts",
+    "query_personal_memory",
     "query_consult_graph",
     "search_exam_handbook",
     "search_chroma_knowledge",
@@ -22,6 +23,8 @@ __all__ = [
     "note_task_medication",
     "note_task_appointment",
     "note_task_report",
+    "start_lab_report_sync",
+    "poll_lab_report_sync",
     "explain_uploaded_report",
     "extract_report_tables",
     "explain_mentioned_report",
@@ -47,6 +50,35 @@ companion_turn: ContextVar[dict[str, Any]] = ContextVar("companion_turn", defaul
 _LIFE_KINDS = frozenset(
     {"place", "time", "mood", "weather", "event", "occupation", "habit", "person", "thing"}
 )
+
+
+def _life_fact_query_needles(query: str) -> list[str]:
+    import re
+
+    text = (query or "").strip()
+    needles: list[str] = []
+    if text:
+        needles.append(text)
+    for m in re.finditer(r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})", text):
+        y, mo, d = m.group(1), int(m.group(2)), int(m.group(3))
+        needles.extend([f"{y}-{mo:02d}-{d:02d}", f"{mo}月{d}日", f"{mo}月{d}", f"{mo}月{d}号"])
+    m = re.search(r"(\d{1,2})月(\d{1,2})", text)
+    if m:
+        mo, d = int(m.group(1)), int(m.group(2))
+        needles.extend([f"-{mo:02d}-{d:02d}", f"{mo}月{d}日", f"{mo}月{d}", f"{mo}月{d}号"])
+    out: list[str] = []
+    for n in needles:
+        n = (n or "").strip()
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def _life_fact_blob(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key) or "")
+        for key in ("kind", "name", "fact", "last_said")
+    )
 
 
 def _turn() -> dict[str, Any]:
@@ -122,15 +154,17 @@ def lookup_life_facts(query: str = "") -> str:
     from src.knowledge.user_finding import list_companion_facts
 
     q = (query or "").strip()
+    needles = _life_fact_query_needles(q)
+    fetch_limit = 120 if needles else 20
     rows: list[dict[str, Any]] = []
-    for item in list_companion_facts(uid, limit=20):
+    for item in list_companion_facts(uid, limit=fetch_limit):
         kind = str(item.get("kind") or "")
         if kind not in _LIFE_KINDS:
             continue
+        if needles and not any(n in _life_fact_blob(item) for n in needles):
+            continue
         name = str(item.get("name") or "").strip()
         fact = str(item.get("fact") or "").strip()
-        if q and q not in fact and q not in name and q not in kind:
-            continue
         rows.append(
             {
                 "kind": kind,
@@ -139,6 +173,21 @@ def lookup_life_facts(query: str = "") -> str:
                 "last_said": item.get("last_said") or "",
             }
         )
+    if not rows and needles:
+        from memory.graphiti_store import search_facts
+
+        for item in search_facts(user_id=uid, query=q, max_facts=12):
+            fact = str(item.get("fact") or "").strip()
+            if not fact:
+                continue
+            rows.append(
+                {
+                    "kind": str(item.get("name") or "memory"),
+                    "name": str(item.get("name") or ""),
+                    "fact": fact,
+                    "last_said": "",
+                }
+            )
     companion_last_facts.set(rows)
     if not rows:
         return dump_envelope(
@@ -149,6 +198,74 @@ def lookup_life_facts(query: str = "") -> str:
             retryable=True,
         )
     return dump_envelope(tool="lookup_life_facts", summary=f"{len(rows[:12])} 条生活事实", data={"facts": rows[:12]})
+
+
+@tool
+def query_personal_memory(
+    mode: str,
+    entity_domain: str = "life",
+    entity_kinds: str = "",
+    time_start: str = "",
+    time_end: str = "",
+    time_hint: str = "",
+    entity_hint: str = "",
+    keywords: str = "",
+) -> str:
+    """按时间或实体入口查个人记忆库（Neo4j Finding + CompanionFact）。
+
+    mode 必填：time_to_entity（先定时间再找实体）或 entity_to_time（先定实体再找时间）。
+    entity_domain：pathology（部位 body_part / 疾病 disease / 症状 symptom）或 life（心情 mood、事物 thing、地点 place、事件 event 等）。
+    entity_kinds：逗号分隔，须与 domain 一致，如 thing,mood 或 body_part,symptom。
+    time_to_entity 时填 time_start/time_end（YYYY-MM-DD）或 time_hint（如「前些天晚上」）；可填 keywords 辅助匹配原文。
+    entity_to_time 时填 entity_hint（如「胃疼」「作业」）与 entity_kinds。
+    """
+    uid = companion_user_id.get() or str(_turn().get("user_id") or "")
+    from algorithm.memory_query import query_personal_memory as run
+
+    payload = run(
+        user_id=uid,
+        mode=mode,
+        entity_domain=entity_domain,
+        entity_kinds=entity_kinds,
+        time_start=time_start,
+        time_end=time_end,
+        time_hint=time_hint,
+        entity_hint=entity_hint,
+        keywords=keywords,
+    )
+    hits = payload.get("hits") or []
+    companion_last_facts.set(
+        [
+            {
+                "name": str(item.get("name") or item.get("kind") or "memory"),
+                "fact": str(item.get("fact") or item.get("raw_text") or ""),
+            }
+            for item in hits[:12]
+            if isinstance(item, dict)
+        ]
+    )
+    if not payload.get("ok"):
+        return dump_envelope(
+            tool="query_personal_memory",
+            ok=False,
+            error=str(payload.get("error") or "查询失败"),
+            data=payload,
+            usable=False,
+            retryable=False,
+        )
+    if not hits:
+        return dump_envelope(
+            tool="query_personal_memory",
+            summary="未命中个人记忆",
+            data=payload,
+            usable=False,
+            retryable=True,
+        )
+    return dump_envelope(
+        tool="query_personal_memory",
+        summary=f"命中 {len(hits)} 条",
+        data=payload,
+    )
 
 
 def _kg_turn_query(query: str) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
@@ -205,12 +322,15 @@ def search_chroma_knowledge(query: str = "") -> str:
     """只查 Chroma 疾病/症状向量库。不要编症状清单。"""
     from algorithm.kg_query import search_chroma_knowledge as run
 
-    _name, text, mentions, _alignments = _kg_turn_query(query)
+    _name, text, mentions, alignments = _kg_turn_query(query)
     extra = []
     for key in ("部位", "疾病", "症状", "检查", "指标"):
         extra.extend(mentions.get(key) or [])
     q = " ".join(part for part in [text, *extra] if part).strip() or text
-    return _kg_dump("search_chroma_knowledge", run(query=q, handler=_name))
+    return _kg_dump(
+        "search_chroma_knowledge",
+        run(query=q, handler=_name, alignments=alignments),
+    )
 
 
 def _report_dump(tool: str, payload: dict[str, Any], *, retryable: bool = True) -> str:
@@ -310,6 +430,50 @@ def compare_lab_history(metric: str = "") -> str:
     )
     companion_last_facts.set(list(payload.get("facts") or []))
     return _report_dump("compare_lab_history", payload, retryable=bool(payload.get("need_metric")))
+
+
+@tool
+def diagnose_tongue(query: str = "") -> str:
+    """对本轮已判定为舌头的图片做舌象分析。返回舌色、舌型、苔色、苔质，不是诊断。"""
+    row = dict(_last_file())
+    path = str(row.get("saved_path") or "")
+    if str(row.get("role") or "") != "tongue_image" or not path:
+        return dump_envelope(
+            tool="diagnose_tongue",
+            summary="本轮没有检出舌头的图片",
+            data={"file": row},
+            usable=False,
+            retryable=False,
+        )
+    from algorithm.tongue_client import diagnose_tongue_file
+
+    packed = diagnose_tongue_file(path)
+    data = packed.get("data") if isinstance(packed.get("data"), dict) else {}
+    if not packed.get("ok"):
+        return dump_envelope(
+            tool="diagnose_tongue",
+            summary=str(packed.get("msg") or packed.get("error") or "舌诊失败"),
+            data=packed,
+            usable=False,
+            retryable=True,
+        )
+    summary = "，".join(
+        f"{key}={value}"
+        for key, value in (
+            ("舌色", data.get("tongueColour")),
+            ("舌型", data.get("tongueShape")),
+            ("苔色", data.get("tongueFurColour")),
+            ("苔质", data.get("tongueFurQuality")),
+        )
+        if value
+    )
+    return dump_envelope(
+        tool="diagnose_tongue",
+        summary=summary or "已返回舌象",
+        data={"query": query, "tongue": data},
+        usable=True,
+        retryable=False,
+    )
 
 
 def _last_file() -> dict[str, Any]:
@@ -533,6 +697,146 @@ def note_task_report(exam: str = "", when: str = "", start_iso: str = "") -> str
     )
 
 
+from algorithm.lab_report_entities import LabReportSyncPollInput, LabReportSyncStartInput
+
+
+@tool(args_schema=LabReportSyncStartInput)
+def start_lab_report_sync(partner_id: str = "", exam_kind: str = "", when: str = "latest") -> str:
+    """从已对接合作机构发起检验报告同步。partner_id、exam_kind、when 使用观察里已归一的实体，禁止自造。"""
+    from algorithm.lab_report_sync_config import get_lab_report_sync_config, resolve_exam
+    from algorithm.rpa_lab_job_store import create_job
+    from algorithm.rpa_lab_runner import schedule_lab_report_sync
+
+    cfg = get_lab_report_sync_config()
+    if not cfg.enabled:
+        return dump_envelope(
+            tool="start_lab_report_sync",
+            ok=False,
+            error="报告同步未启用",
+            usable=False,
+            retryable=False,
+        )
+    turn = _turn()
+    entities = turn.get("lab_sync_entities") if isinstance(turn.get("lab_sync_entities"), dict) else {}
+    partner_id = (partner_id or str(entities.get("partner_id") or "")).strip()
+    exam_kind = (exam_kind or str(entities.get("exam_kind") or "")).strip()
+    when = (when or str(entities.get("when") or "latest")).strip() or "latest"
+    if not partner_id or not exam_kind:
+        missing = [name for name, val in (("机构", partner_id), ("检查", exam_kind)) if not val]
+        return dump_envelope(
+            tool="start_lab_report_sync",
+            ok=False,
+            error="缺少实体：" + "、".join(missing),
+            usable=False,
+            retryable=True,
+            data={"entities": entities, "partners": list(cfg.partners.keys())},
+        )
+    resolved = resolve_exam(partner_id, exam_kind)
+    if resolved is None:
+        return dump_envelope(
+            tool="start_lab_report_sync",
+            ok=False,
+            error=f"未知机构或检查类型：partner_id={partner_id!r} exam_kind={exam_kind!r}",
+            usable=False,
+            retryable=False,
+            data={"partners": list(cfg.partners.keys())},
+        )
+    turn = _turn()
+    uid = companion_user_id.get() or str(turn.get("user_id") or "")
+    session_id = str(turn.get("session_id") or "")
+    cfg.download_dir.mkdir(parents=True, exist_ok=True)
+    job = create_job(
+        user_id=uid,
+        session_id=session_id,
+        partner_id=resolved.partner_id,
+        exam_kind=resolved.exam_kind,
+        download_dir=cfg.download_dir,
+        robot_app_uuid=resolved.robot_app_uuid,
+    )
+    schedule_lab_report_sync(job)
+    summary = (
+        f"已向{resolved.partner_title}发起{resolved.exam_label}报告同步（任务 {job.job_id[:8]}…）。"
+        "若需登录/扫码，请看影刀窗口；稍后用 poll_lab_report_sync 查是否下载完成。"
+    )
+    return dump_envelope(
+        tool="start_lab_report_sync",
+        summary=summary,
+        data={
+            "job_id": job.job_id,
+            "status": job.status,
+            "partner_id": resolved.partner_id,
+            "exam_kind": resolved.exam_kind,
+            "when": when,
+            "output_path": job.output_path,
+        },
+        usable=True,
+        retryable=False,
+    )
+
+
+@tool(args_schema=LabReportSyncPollInput)
+def poll_lab_report_sync(job_id: str = "") -> str:
+    """查询检验报告同步任务是否完成；完成后自动接入报告解读。job_id 可空（用本会话最近一次任务）。"""
+    from pathlib import Path
+
+    from algorithm.rpa_lab_ingest import ingest_job_pdf
+    from algorithm.rpa_lab_job_store import get_job, latest_job_for_session
+
+    turn = _turn()
+    jid = (job_id or "").strip()
+    job = get_job(jid) if jid else latest_job_for_session(str(turn.get("session_id") or ""))
+    if job is None:
+        return dump_envelope(
+            tool="poll_lab_report_sync",
+            ok=False,
+            error="没有可查询的同步任务",
+            usable=False,
+            retryable=True,
+        )
+    if job.status == "failed":
+        return dump_envelope(
+            tool="poll_lab_report_sync",
+            summary=f"同步失败：{job.error or '未知错误'}",
+            data=job.to_dict(),
+            usable=False,
+            retryable=True,
+        )
+    pdf = Path(job.output_path)
+    if job.status == "done" or (pdf.is_file() and pdf.stat().st_size > 0):
+        if job.status != "done":
+            result = ingest_job_pdf(job)
+        else:
+            result = {"ok": True, "explain": {"summary": "报告已同步完成"}, "ingested": {}}
+        if not result.get("ok"):
+            return dump_envelope(
+                tool="poll_lab_report_sync",
+                ok=False,
+                error=str(result.get("error") or "解读失败"),
+                data=job.to_dict(),
+                usable=False,
+                retryable=True,
+            )
+        explain = result.get("explain") if isinstance(result.get("explain"), dict) else {}
+        summary = str(explain.get("summary") or "报告已下载并完成解读。")
+        ingested = result.get("ingested") if isinstance(result.get("ingested"), dict) else {}
+        if ingested:
+            companion_parsed_report.set(ingested.get("parsed") or {})
+        return dump_envelope(
+            tool="poll_lab_report_sync",
+            summary=summary,
+            data={"job": job.to_dict(), "explain": explain, "ingested": ingested},
+            usable=True,
+            retryable=False,
+        )
+    return dump_envelope(
+        tool="poll_lab_report_sync",
+        summary="报告仍在拉取中，请稍后再问；若需扫码请看影刀窗口。",
+        data=job.to_dict(),
+        usable=False,
+        retryable=True,
+    )
+
+
 @tool
 def safety_policy_hint() -> str:
     """急症或用药剂量：返回安全口径，禁止给出具体剂量或停药指导。"""
@@ -561,19 +865,27 @@ def mark_companion_tools() -> None:
     mark_companion_tool(query_consult_graph, "knowledge")
     mark_companion_tool(search_exam_handbook, "knowledge")
     mark_companion_tool(search_chroma_knowledge, "knowledge")
-    mark_companion_tool(lookup_stated_consult, "memory")
+    mark_companion_tool(lookup_stated_consult, "memory", majors=("近况陈述",))
     mark_companion_tool(
         lookup_life_facts,
         "memory",
-        majors=("个人记忆问答", "近况陈述"),
+        majors=("近况陈述",),
+    )
+    mark_companion_tool(
+        query_personal_memory,
+        "memory",
+        handlers=("mem_time_to_entity", "mem_entity_to_time"),
     )
     mark_companion_tool(search_long_memory, "memory", majors=("近况陈述",))
+    mark_companion_tool(diagnose_tongue, "tongue", handlers=("tongue_recognize",))
     mark_companion_tool(describe_uploaded_image, "file", handlers=("file_image",))
     mark_companion_tool(describe_uploaded_document, "file", handlers=("file_document",))
     mark_companion_tool(explain_uploaded_report, "report", handlers=("report_upload",))
     mark_companion_tool(extract_report_tables, "report", handlers=("report_tables", "report_upload"))
     mark_companion_tool(explain_mentioned_report, "report", handlers=("report_explain",))
     mark_companion_tool(compare_lab_history, "report", handlers=("report_compare",))
+    mark_companion_tool(start_lab_report_sync, "report", handlers=("report_sync",))
+    mark_companion_tool(poll_lab_report_sync, "report", handlers=("report_sync",))
     mark_companion_tool(note_task_remind, "task", handlers=("task_remind",))
     mark_companion_tool(note_task_checkin, "task", handlers=("task_checkin",))
     mark_companion_tool(note_task_medication, "task", handlers=("task_medication",))

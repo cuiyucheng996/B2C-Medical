@@ -19,18 +19,30 @@ web-frontend/node_modules/
 # Python
 .venv/
 .cache/
+server/directed_crawl/crawl_data/*
+!server/directed_crawl/crawl_data/.gitkeep
 vendor/**/.cache/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 
+# 本地开发样例与中间件副本（体积大，勿整库 push）
+data/dev_resources/
+
+# 报告解读版面导出图（运行产物）
+server/report_read/Layout recognition image/
+server/mcp_server/yingdao/
+
+# 第三方克隆（嵌套 git，勿 add -A）
+External/*
+!External/README.md
+
 # 用户体检数据与评测产物（体积大）
-data/user_reports/
-data/user_files/
-data/exam_kb/
-data/eval_ingest/
-data/spell_check/processed/
+data/user_production/user_reports/
+data/user_production/user_files/
+model/local_vector_db/
+tests/eval_ingest/
 
 # 第三方克隆与 Docker 运行时（体积大，不进本仓库）
 External/agent-eval/
@@ -38,12 +50,13 @@ External/agent-orchestration/
 External/automation-rpa/
 External/rag-knowledge/
 External/ragflow/
-data/ui_drafts/
-scripts/_tmp_*
+data/user_production/ui_drafts/
+**/scripts/_tmp_*
 
 # 预训练与训练权重（勿提交 GitHub）
-pretrained/**/*.bin
-pretrained/**/*.safetensors
-checkpoint/**/*.pt
-checkpoint/**/*.bin
-checkpoint/**/*.safetensors
+model/pretrained/**/*.bin
+model/pretrained/**/*.safetensors
+model/checkpoint/
+model/checkpoint/**/*.pt
+model/checkpoint/**/*.bin
+model/checkpoint/**/*.safetensors

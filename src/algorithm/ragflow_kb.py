@@ -231,23 +231,60 @@ def _retrieve_remote_hits(text: str, *, top_k: int) -> list[dict[str, Any]]:
     return hits
 
 
+def _ragflow_sync_error(exc: BaseException) -> str:
+    msg = str(exc)[:720]
+    low = msg.lower()
+    if "ssl" in low or "unexpected_eof" in low or "dashscope" in low:
+        return (
+            f"{msg}；RAGFlow 推块会在容器内调 DashScope。若配置了 HTTP(S)_PROXY，请把 dashscope.aliyuncs.com "
+            "加入 NO_PROXY，或去掉容器代理后 docker compose -p ragflow --profile cpu up -d ragflow-cpu "
+            "--force-recreate --no-deps"
+        )
+    return msg[:800]
+
+
 def replace_pdf(
     path: str | Path,
     *,
     replace_same_name: bool = True,
     chunk_source: str = "local",
     with_tsr: bool = False,
+    engine: str = "deepdoc",
 ) -> dict[str, Any]:
     """先写入本地分块；RAGFlow 可用时再同步过去。同名默认覆盖。
 
     chunk_source=local：DeepDoc 版面模型认 title/text，再按 title 分块上传（不开表格 TSR）。--tsr 才加表结构。
     chunk_source=ragflow：上传后让 RAGFlow 自己解析（旧行为）。
     """
-    local = ingest_local_pdf(path, replace_same_name=replace_same_name, with_tsr=with_tsr)
+    local = ingest_local_pdf(path, replace_same_name=replace_same_name, with_tsr=with_tsr, engine=engine)
     result: dict[str, Any] = {"local": local, "ragflow": None}
     if not ping_ragflow().get("ok"):
         return result
     file_path = Path(path)
+    try:
+        return _replace_pdf_ragflow(
+            file_path,
+            replace_same_name=replace_same_name,
+            chunk_source=chunk_source,
+            with_tsr=with_tsr,
+            local=local,
+            result=result,
+        )
+    except Exception as exc:
+        logger.warning("ragflow sync failed, local chunks kept", exc_info=True)
+        result["ragflow"] = {"ok": False, "error": _ragflow_sync_error(exc)}
+        return result
+
+
+def _replace_pdf_ragflow(
+    file_path: Path,
+    *,
+    replace_same_name: bool,
+    chunk_source: str,
+    with_tsr: bool,
+    local: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
     dataset = ensure_dataset()
     dataset_id = str(dataset.get("id") or "")
     filename = file_path.name
@@ -310,7 +347,8 @@ def replace_pdf(
         text = str(row.get("content") or "").strip()
         added: dict[str, Any] | None = None
         last_error = ""
-        for attempt in range(3):
+        attempt = 0
+        while True:
             try:
                 added = _request(
                     "POST",
@@ -323,13 +361,23 @@ def replace_pdf(
                 )
             except RuntimeError as exc:
                 last_error = str(exc)
-                time.sleep(2 * (attempt + 1))
-                continue
-            break
+                added = None
+            else:
+                message = str((added or {}).get("message") or "")
+                if int((added or {}).get("code") or 0) == 0:
+                    break
+                last_error = message
+                added = None
+            low = last_error.lower()
+            if not any(token in low for token in ("ssl", "unexpected_eof", "timeout", "dashscope", "max retries")):
+                break
+            time.sleep(min(30, 3 * (attempt + 1)))
+            attempt += 1
         if added is None or int(added.get("code") or 0) != 0:
             raise RuntimeError((added or {}).get("message") or last_error or "写入 RAGFlow 分块失败")
         pushed += 1
     result["ragflow"] = {
+        "ok": True,
         "dataset_id": dataset_id,
         "document_id": doc_id,
         "name": filename,

@@ -26,7 +26,17 @@ __all__ = [
 
 _HTML_TABLE_RE = re.compile(r"(?is)<table\b.*?</table>")
 _PIPE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+\S.*$")
+_BRACKET_RE = re.compile(r"【([^】]{1,24})】")
+# 正文里丢了【】时，用表内项目名补表标题。只在标题为空时用。
+_CAPTION_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("既往史(内)", "心率", "肺部"), "内科"),
+    (("既往史(外)", "脊柱", "外生殖器"), "外科"),
+    (("裸眼视力", "外眼检查"), "眼科"),
+    (("口咽", "扁桃体"), "耳鼻喉"),
+    (("身高", "收缩压", "舒张压", "体重指数"), "一般检查"),
+    (("白细胞", "血红蛋白", "血小板"), "血液常规"),
+    (("尿胆原", "尿蛋白", "尿比重"), "尿常规"),
+)
 _CELL_TAG_RE = re.compile(r"<t([hd])(\s[^>]*)?>(.*?)</t\1>", re.I | re.S)
 _SPAN_RE = re.compile(r"(rowspan|colspan)\s*=\s*['\"]?(\d+)", re.I)
 
@@ -264,6 +274,7 @@ def _pypdf_text(pdf: Path) -> tuple[str, int]:
 
 def extract_markdown_tables(markdown: str) -> list[str]:
     """抽出整表：HTML <table> 或带分隔行的 GFM 表；绑上一节标题。行首单独的 | 不当表。"""
+    markdown = _promote_loose_tables(markdown)
     if not (markdown or "").strip():
         return []
     units: list[tuple[str, str]] = []
@@ -285,11 +296,100 @@ def extract_markdown_tables(markdown: str) -> list[str]:
     for kind, unit in units:
         if kind == "table":
             tables.append(_with_caption(pending, unit))
+            pending = ""
             continue
         for line in unit.splitlines():
-            if _HEADING_RE.match(line.strip()):
-                pending = line.strip()
+            pending = _next_caption(pending, line)
     return tables
+
+
+def _promote_loose_tables(markdown: str) -> str:
+    """「项目 本次结果 …」这种没转成表格的文本块，补成 HTML 表。"""
+    lines = (markdown or "").splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        if _is_loose_header(lines[index]):
+            block = [lines[index]]
+            nxt = index + 1
+            while nxt < len(lines):
+                text = lines[nxt].strip()
+                if (
+                    not text
+                    or text.startswith("#")
+                    or text.startswith("<")
+                    or text.startswith("!")
+                    or text.startswith("检查医师")
+                ):
+                    break
+                block.append(lines[nxt])
+                nxt += 1
+            html = _loose_block_to_html(block)
+            if html:
+                out.append(html)
+                index = nxt
+                continue
+        out.append(lines[index])
+        index += 1
+    return "\n".join(out)
+
+
+def _is_loose_header(line: str) -> bool:
+    text = (line or "").strip()
+    return text.startswith("项目") and "本次结果" in text and "<" not in text
+
+
+def _loose_block_to_html(block: list[str]) -> str:
+    rows = [[cell for cell in re.split(r"\s+", line.strip()) if cell] for line in block]
+    rows = [row for row in rows if row]
+    if len(rows) < 2:
+        return ""
+    header = rows[0]
+    body = rows[1:]
+    if body and all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", cell) for cell in body[0]):
+        dates = body.pop(0)
+        used = 0
+        merged: list[str] = []
+        for cell in header:
+            if used < len(dates) and cell in ("本次结果", "历史结果"):
+                merged.append(f"{cell} {dates[used]}")
+                used += 1
+            else:
+                merged.append(cell)
+        header = merged
+    ref_at = header.index("参考值") if "参考值" in header else -1
+    width = len(header)
+    body_rows: list[list[str]] = []
+    for row in body:
+        if ref_at >= 0 and len(row) == width - 1:
+            row = row[:ref_at] + [""] + row[ref_at:]
+        if len(row) < width:
+            row = row + [""] * (width - len(row))
+        body_rows.append(row[:width])
+    if not body_rows:
+        return ""
+
+    def cells(row: list[str]) -> str:
+        return "".join(f"<td>{_html_text(cell)}</td>" for cell in row)
+
+    return "<table>" + "".join(f"<tr>{cells(row)}</tr>" for row in [header, *body_rows]) + "</table>"
+
+
+def _html_text(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _next_caption(pending: str, line: str) -> str:
+    """表名取这一行里最后一对【】中的文字，往下扫就是离表最近的。"""
+    found = _BRACKET_RE.findall(line or "")
+    if found:
+        return found[-1].strip()
+    return pending
+
+
+def _nearest_bracket(text: str) -> str:
+    found = _BRACKET_RE.findall(text or "")
+    return found[-1].strip() if found else ""
 
 
 def table_rows(table: str) -> list[list[str]]:
@@ -417,20 +517,20 @@ def _fill_down_first_column(rows: list[list[str]]) -> list[list[str]]:
 
 def table_to_json(table: str) -> dict:
     """一行表头 + 数据行 → {caption, headers, records}。"""
-    caption = ""
-    for line in (table or "").splitlines():
-        text = line.strip()
-        if not text:
-            continue
-        if text.startswith("#"):
-            caption = text.lstrip("#").strip()
-            break
-        if "<table" in text.lower() or text.startswith("|"):
-            break
-        if len(text) <= 24 and not text.startswith("<"):
-            caption = text
-        break
+    lower = (table or "").lower()
+    cut = lower.find("<table")
+    head = (table or "")[:cut] if cut >= 0 else ""
+    caption = _nearest_bracket(head)
+    if not caption:
+        lines = [
+            re.sub(r"^#+\s*", "", line).strip()
+            for line in head.splitlines()
+            if line.strip() and not line.strip().startswith("|")
+        ]
+        caption = lines[-1] if lines else ""
     rows = table_rows(table)
+    if not caption:
+        caption = _nearest_bracket("\n".join(" ".join(row) for row in rows[:3]))
     if not rows:
         return {"caption": caption, "headers": [], "records": []}
     headers = [cell or f"col_{i}" for i, cell in enumerate(rows[0])]
@@ -440,24 +540,63 @@ def table_to_json(table: str) -> dict:
         for i, key in enumerate(headers):
             rec[key] = row[i] if i < len(row) else ""
         records.append(rec)
+    if not caption:
+        caption = _caption_from_items(records, headers)
     return {"caption": caption, "headers": headers, "records": records}
 
 
-def mineru_markdown(path: str | Path) -> str:
-    """只跑 MinerU 拆表，不再做 YOLOX 分区。"""
-    return _try_mineru(Path(path))
+def _caption_from_items(records: list[dict[str, str]], headers: list[str]) -> str:
+    """表前没有【】时，用第一列项目名补标题。"""
+    key = headers[0] if headers else ""
+    names = " ".join(str(row.get(key) or "") for row in records)
+    for hints, title in _CAPTION_HINTS:
+        if any(hint in names for hint in hints):
+            return title
+    return ""
 
 
-def _try_mineru(path: Path) -> str:
-    """进程内 pipeline 拆表，用项目 .cache 本地权重，不启 mineru-api。"""
+def _mineru_latest_middle_json(out_root: Path, stem: str) -> Path | None:
+    mid_files = sorted(
+        (p for p in out_root.rglob("*_middle.json") if stem in p.as_posix()),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    return mid_files[0] if mid_files else None
+
+
+def mineru_title_chunks(
+    path: str | Path,
+    layout: str = "v2",
+    *,
+    max_chars: int = 1400,
+    overlap: int = 60,
+) -> list[dict]:
+    """MinerU 解析后按版面标题分段切块（标题 + 后续正文/表/图为一组）。"""
+    mid = _mineru_run_parse(Path(path), layout=layout, layout_filter=True)
+    if mid is None:
+        return []
+    from src.knowledge.mineru_layout_filter import middle_json_to_title_chunks
+
+    return middle_json_to_title_chunks(
+        mid,
+        max_chars=max_chars,
+        overlap=overlap,
+        pdf_path=Path(path),
+    )
+
+
+def _mineru_run_parse(path: Path, layout: str, *, layout_filter: bool) -> Path | None:
+    """跑 MinerU；layout_filter 时返回最新 middle.json 路径。"""
     try:
         from mineru.cli.common import do_parse
 
         from src.configs.cache import MINERU_OUTPUT_DIR, PROJECT_ROOT
+        from src.knowledge.layout_v3 import use_layout
         from src.configs.config_loader import get_yaml_config
     except Exception:
         logger.warning("mineru import skipped", exc_info=True)
-        return ""
+        return None
+    use_layout(layout)
     cfg = (get_yaml_config() or {}).get("mineru") or {}
     out_root = Path(str(cfg.get("output_dir") or MINERU_OUTPUT_DIR))
     if not out_root.is_absolute():
@@ -475,19 +614,51 @@ def _try_mineru(path: Path) -> str:
             parse_method="auto",
             formula_enable=False,
             table_enable=True,
-            f_draw_layout_bbox=False,
+            f_draw_layout_bbox=True,
             f_draw_span_bbox=False,
-            f_dump_md=True,
-            f_dump_middle_json=False,
+            f_dump_md=not layout_filter,
+            f_dump_middle_json=layout_filter,
             f_dump_model_output=False,
             f_dump_orig_pdf=False,
             f_dump_content_list=False,
         )
     except Exception:
         logger.warning("mineru table extract skipped or failed", exc_info=True)
-        return ""
-    matches = sorted(out_root.rglob("*.md"), key=lambda item: item.stat().st_mtime, reverse=True)
+        return None
+    if not layout_filter:
+        return None
+    return _mineru_latest_middle_json(out_root, path.stem)
+
+
+def mineru_markdown(path: str | Path, layout: str = "v2", *, layout_filter: bool = False) -> str:
+    """只跑 MinerU 拆表，不再做 YOLOX 分区。layout 为 v2 或 v3。
+
+    layout_filter=True：按版面类型只保留标题/正文/表格/图片（见 mineru_layout_filter）。
+    """
+    return _try_mineru(Path(path), layout=layout, layout_filter=layout_filter)
+
+
+def _try_mineru(path: Path, layout: str = "v2", *, layout_filter: bool = False) -> str:
+    """进程内 pipeline 拆表，用项目 .cache 本地权重，不启 mineru-api。"""
+    from src.configs.cache import MINERU_OUTPUT_DIR, PROJECT_ROOT
+    from src.configs.config_loader import get_yaml_config
+
+    cfg = (get_yaml_config() or {}).get("mineru") or {}
+    out_root = Path(str(cfg.get("output_dir") or MINERU_OUTPUT_DIR))
+    if not out_root.is_absolute():
+        out_root = PROJECT_ROOT / out_root
+    mid = _mineru_run_parse(path, layout, layout_filter=layout_filter)
+    if layout_filter and mid is not None:
+        try:
+            from src.knowledge.mineru_layout_filter import middle_json_to_kb_markdown
+
+            text = middle_json_to_kb_markdown(mid, pdf_path=path).strip()
+            if text:
+                return text
+        except Exception:
+            logger.warning("mineru layout filter failed, fallback to raw md", exc_info=True)
     stem = path.stem
+    matches = sorted(out_root.rglob("*.md"), key=lambda item: item.stat().st_mtime, reverse=True)
     for item in matches:
         if stem in item.stem or stem in str(item.parent):
             text = item.read_text(encoding="utf-8", errors="ignore").strip()

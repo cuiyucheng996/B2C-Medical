@@ -27,7 +27,7 @@ GOLD_CASES: list[dict[str, Any]] = [
 BIND_CASES: list[dict[str, Any]] = [
     {"id": "bind_chat", "major": "闲聊", "handler": "chat_hello", "tools": []},
     {"id": "bind_graph", "major": "公共知识问答", "handler": "kg_part_diseases", "tools": ["query_consult_graph"]},
-    {"id": "bind_mem", "major": "个人记忆问答", "handler": "mem_stated_consult", "tools": ["lookup_stated_consult"]},
+    {"id": "bind_mem", "major": "个人记忆问答", "handler": "mem_entity_to_time", "tools": ["query_personal_memory"]},
     {"id": "bind_report", "major": "报告指标解读", "handler": "report_upload", "tools": ["explain_uploaded_report", "extract_report_tables"]},
     {"id": "bind_task", "major": "具体任务", "handler": "task_remind", "tools": ["note_task_remind"]},
     {"id": "bind_risk", "major": "风险拦截", "handler": "", "tools": ["safety_policy_hint"]},

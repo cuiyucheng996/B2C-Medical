@@ -21,7 +21,7 @@ __all__ = [
     "retrieve_local_hits",
 ]
 
-_KB_DIR = B2C_ROOT / "data" / "exam_kb"
+_KB_DIR = B2C_ROOT / "model" / "local_vector_db"
 _CHUNKS = _KB_DIR / "chunks.jsonl"
 _MANIFEST = _KB_DIR / "manifest.json"
 
@@ -257,7 +257,128 @@ def ingest_local_pdf(
     file_path = Path(path)
     if not file_path.is_file():
         raise FileNotFoundError(str(file_path))
-    if (engine or "deepdoc").strip().lower() == "unstructured":
+    eng = (engine or "deepdoc").strip().lower()
+    if eng == "mineru":
+        ensure_uvgraph_root()
+        from algorithm.chunk_config import get_chunk_config
+        from src.configs.config_loader import get_yaml_config
+        from src.knowledge.pdf_extract import mineru_markdown, mineru_title_chunks
+
+        cfg = (get_yaml_config() or {}).get("mineru") or {}
+        ingest_cfg = (get_yaml_config() or {}).get("doc_ingest") or {}
+        layout = str(cfg.get("layout") or "v2")
+        layout_filter = bool(ingest_cfg.get("mineru_layout_filter", True))
+        chunk_by_title = bool(ingest_cfg.get("mineru_chunk_by_title", True))
+        max_chars = int(get_chunk_config().get("local_max_chars") or 1400) if chunk_by_title else _chunk_chars()
+        overlap = _chunk_overlap()
+        chunk_rows: list[dict[str, Any]] = []
+        if layout_filter and chunk_by_title:
+            chunk_rows = mineru_title_chunks(
+                file_path,
+                layout=layout,
+                max_chars=max_chars,
+                overlap=overlap,
+            )
+        pieces = [str(row.get("content") or "").strip() for row in chunk_rows if str(row.get("content") or "").strip()]
+        if not pieces:
+            md = mineru_markdown(file_path, layout=layout, layout_filter=layout_filter)
+            text = (md or "").strip()
+            if not text:
+                raise RuntimeError(f"MinerU 未产出 Markdown（检查 config.mineru 权重与 device）: {file_path}")
+            pieces = _heading_chunks(text)
+        else:
+            text = "\n\n".join(pieces)
+        if not pieces:
+            raise RuntimeError(f"MinerU 文本无法切块: {file_path}")
+        pages = _pdf_page_count(file_path) or max(1, len(text) // 2000)
+        preprocess = {
+            "pages": pages,
+            "native_chars": len(text),
+            "ocr_chars": 0,
+            "ocr_pages": 0,
+            "stages": [
+                {
+                    "id": "mineru",
+                    "title": f"MinerU pipeline（layout={layout}）",
+                    "ok": True,
+                    "detail": f"共 {len(pieces)} 段 · 字符 {len(text)}",
+                    "ops": [
+                        "进程内 do_parse",
+                        "仅保留版面：标题/正文/表格/图片（页眉页脚页码等丢弃）",
+                        "按版面标题（含段落标题）+ 其后正文/表/图合并为块，过长再按字数切",
+                    ],
+                }
+            ],
+            "block_kinds": {"text": len(pieces)},
+            "samples": [{"type": "text", "page": 1, "text": pieces[0][:120]}] if pieces else [],
+            "page_rows": [
+                {
+                    "page": 1,
+                    "chars": len(text),
+                    "backend": "mineru",
+                    "regions": 0,
+                    "lines": 0,
+                    "native": len(text),
+                    "ocr": 0,
+                }
+            ],
+        }
+        if chunk_rows:
+            records = [
+                {
+                    "content": str(row.get("content") or ""),
+                    "page": int(row.get("page") or 1),
+                    "bbox": [0, idx * 20, 100, idx * 20 + 10],
+                }
+                for idx, row in enumerate(chunk_rows)
+            ]
+        else:
+            records = [
+                {"content": piece, "page": 1, "bbox": [0, idx * 20, 100, idx * 20 + 10]}
+                for idx, piece in enumerate(pieces)
+            ]
+        return _commit_records(
+            file_path,
+            records,
+            source="mineru",
+            replace_same_name=replace_same_name,
+            preprocess=preprocess,
+        )
+    if eng == "pypdf":
+        text, src = _read_pdf_text(file_path)
+        pieces = _naive_chunks(text)
+        if not pieces:
+            raise RuntimeError(f"pypdf 未抽出可切块文本: {file_path}")
+        records = [
+            {"content": piece, "page": 1, "bbox": [0, idx * 20, 100, idx * 20 + 10]}
+            for idx, piece in enumerate(pieces)
+        ]
+        preprocess = {
+            "pages": max(1, len(text) // 2000),
+            "native_chars": len(text),
+            "ocr_chars": 0,
+            "ocr_pages": 0,
+            "stages": [
+                {
+                    "id": "pypdf",
+                    "title": "pypdf 抽字 + 标题切块",
+                    "ok": True,
+                    "detail": f"共 {len(pieces)} 段 · 字符 {len(text)}",
+                    "ops": ["pypdf 抽文本", "失败时走 report_ingest 版面", "按标题或固定长度切块"],
+                }
+            ],
+            "block_kinds": {"text": len(pieces)},
+            "samples": [{"type": "text", "page": 1, "text": pieces[0][:120]}] if pieces else [],
+            "page_rows": [{"page": 1, "chars": len(text), "backend": src, "regions": 0, "lines": 0, "native": len(text), "ocr": 0}],
+        }
+        return _commit_records(
+            file_path,
+            records,
+            source=src,
+            replace_same_name=replace_same_name,
+            preprocess=preprocess,
+        )
+    if eng == "unstructured":
         from algorithm.unstructured_tables import extract_tables_unstructured
 
         packed = extract_tables_unstructured(file_path)
@@ -411,6 +532,24 @@ def _query_terms(query: str) -> list[str]:
     return list(dict.fromkeys(item for item in terms if len(item) >= 2))[:40]
 
 
+def _pdf_page_count(path: Path) -> int:
+    try:
+        from pypdf import PdfReader
+
+        return len(PdfReader(str(path)).pages)
+    except Exception:
+        return 0
+
+
+def mineru_available() -> bool:
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("mineru.cli.common") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
 def _read_pdf_text(path: Path) -> tuple[str, str]:
     pages: list[str] = []
     try:
@@ -439,10 +578,13 @@ def _read_pdf_text(path: Path) -> tuple[str, str]:
 
 
 def _heading_chunks(text: str) -> list[str]:
-    from parser.text_clean import split_by_headings
+    try:
+        from parser.text_clean import split_by_headings
 
-    pieces = split_by_headings(text)
-    return pieces or _naive_chunks(text)
+        pieces = split_by_headings(text)
+        return pieces or _naive_chunks(text)
+    except (ImportError, ModuleNotFoundError):
+        return _naive_chunks(text)
 
 
 def _naive_chunks(text: str) -> list[str]:

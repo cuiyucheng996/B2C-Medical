@@ -17,6 +17,20 @@ UVGRAPH_ROOT = VENDOR_UVGRAPH
 
 def ensure_b2c_runtime_path() -> Path:
     """B2C src 在前（algorithm/agent）；vendor 在后供 `import src.*`。"""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(B2C_ROOT / ".env")
+    except ImportError:
+        pass
+    if str(B2C_ROOT) not in sys.path:
+        sys.path.insert(0, str(B2C_ROOT))
+    try:
+        from infra.registry.nacos_config import apply_shared_config
+
+        apply_shared_config()
+    except Exception:
+        pass
     vendor = str(VENDOR_UVGRAPH)
     local = str(B2C_SRC)
     for item in (vendor, local):

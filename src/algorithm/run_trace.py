@@ -25,11 +25,23 @@ __all__ = [
 def start_turn_trace(*, session_id: str = "", user_id: str = "", query: str = "") -> str:
     tid = uuid4().hex[:16]
     _trace_id.set(tid)
+    preview = (query or "").strip()[:120]
+    try:
+        from algorithm.otel_setup import begin_turn_span
+
+        begin_turn_span(
+            tid,
+            session_id=(session_id or "").strip(),
+            user_id=(user_id or "").strip(),
+            query_preview=preview,
+        )
+    except Exception:
+        pass
     log_trace_event(
         "turn_start",
         session_id=(session_id or "").strip(),
         user_id=(user_id or "").strip(),
-        query_preview=(query or "").strip()[:120],
+        query_preview=preview,
     )
     return tid
 
@@ -38,6 +50,12 @@ def bind_trace_id(trace_id: str) -> None:
     tid = (trace_id or "").strip()
     if tid:
         _trace_id.set(tid)
+        try:
+            from algorithm.otel_setup import bind_trace_attribute
+
+            bind_trace_attribute(tid)
+        except Exception:
+            pass
 
 
 def current_trace_id() -> str:
@@ -56,6 +74,14 @@ def log_trace_event(event: str, **fields: Any) -> None:
         if val is None or val == "":
             continue
         payload[key] = val
+    try:
+        from algorithm.otel_setup import emit_trace_event, end_turn_span
+
+        emit_trace_event(event, **fields)
+        if (event or "").strip() == "turn_end":
+            end_turn_span(**{k: v for k, v in fields.items() if k in {"session_id", "tool_steps"}})
+    except Exception:
+        pass
     try:
         logger.info("%s", json.dumps(payload, ensure_ascii=False, default=str))
     except Exception:
