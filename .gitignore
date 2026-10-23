@@ -38,6 +38,10 @@ server/mcp_server/yingdao/
 External/*
 !External/README.md
 
+# Inspect / 本地评测日志
+logs/
+data/eval_inspect/logs/
+
 # 用户体检数据与评测产物（体积大）
 data/user_production/user_reports/
 data/user_production/user_files/

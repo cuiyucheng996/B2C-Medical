@@ -13,6 +13,7 @@ from configs.paths_b2c import B2C_ROOT, ensure_uvgraph_root
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "append_local_text_chunks",
     "describe_pdf_preprocess",
     "ingest_local_pdf",
     "list_local_documents",
@@ -456,6 +457,64 @@ def _commit_records(
         "total_chunks": len(existing),
         "store": str(_CHUNKS),
         "preprocess": preprocess,
+    }
+
+
+def append_local_text_chunks(
+    title: str,
+    text: str,
+    *,
+    source: str = "knowledge_pipe",
+    replace_same_name: bool = True,
+) -> dict[str, Any]:
+    """将纯文本切块写入本地手册库（RAGFlow 未起时的检索源）。"""
+    name = re.sub(r"\s+", " ", (title or "snippet").strip()) or "snippet"
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("text 为空")
+    existing = load_local_chunks()
+    if replace_same_name:
+        existing = [row for row in existing if str(row.get("doc") or "") != name]
+    size = max(120, _chunk_chars())
+    overlap = min(_chunk_overlap(), size // 4)
+    parts: list[str] = []
+    for para in re.split(r"\n\s*\n", body):
+        chunk = para.strip()
+        if not chunk:
+            continue
+        start = 0
+        while start < len(chunk):
+            parts.append(chunk[start : start + size])
+            if start + size >= len(chunk):
+                break
+            start += max(1, size - overlap)
+    if not parts:
+        parts = [body[:size]]
+    base_ord = len(existing)
+    for idx, content in enumerate(parts):
+        existing.append(
+            {
+                "id": f"{name}:{base_ord + idx}",
+                "doc": name,
+                "ord": base_ord + idx,
+                "content": content,
+                "source": source,
+                "page": 1,
+                "bbox": [0, idx * 20, 100, idx * 20 + 10],
+            }
+        )
+    _KB_DIR.mkdir(parents=True, exist_ok=True)
+    with _CHUNKS.open("w", encoding="utf-8") as handle:
+        for row in existing:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    docs = list_local_documents()
+    _MANIFEST.write_text(json.dumps({"documents": docs}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "doc": name,
+        "source": source,
+        "chunk_count": len(parts),
+        "total_chunks": len(existing),
+        "store": str(_CHUNKS),
     }
 
 

@@ -697,10 +697,7 @@ def note_task_report(exam: str = "", when: str = "", start_iso: str = "") -> str
     )
 
 
-from algorithm.lab_report_entities import LabReportSyncPollInput, LabReportSyncStartInput
-
-
-@tool(args_schema=LabReportSyncStartInput)
+@tool()
 def start_lab_report_sync(partner_id: str = "", exam_kind: str = "", when: str = "latest") -> str:
     """从已对接合作机构发起检验报告同步。partner_id、exam_kind、when 使用观察里已归一的实体，禁止自造。"""
     from algorithm.lab_report_sync_config import get_lab_report_sync_config, resolve_exam
@@ -774,7 +771,7 @@ def start_lab_report_sync(partner_id: str = "", exam_kind: str = "", when: str =
     )
 
 
-@tool(args_schema=LabReportSyncPollInput)
+@tool()
 def poll_lab_report_sync(job_id: str = "") -> str:
     """查询检验报告同步任务是否完成；完成后自动接入报告解读。job_id 可空（用本会话最近一次任务）。"""
     from pathlib import Path

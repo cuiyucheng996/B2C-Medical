@@ -56,6 +56,7 @@ dependencies = [
     "paddlepaddle-gpu>=3.0; sys_platform == 'win32'",
     "paddlex>=3.0",
     "label-studio>=1.16",
+    "inspect-ai>=0.3.283",
 ]
 
 [[tool.uv.index]]

@@ -1,0 +1,82 @@
+# 开发/评测用意图清单（生产可替换为 dev_resources 下完整版）
+major_order:
+  - 闲聊
+  - 公共知识问答
+  - 个人记忆问答
+  - 报告指标解读
+  - 具体任务
+  - 风险拦截
+  - 近况陈述
+  - 图片识别解析
+
+rule_order:
+  - chat_hello
+  - kg_part_diseases
+  - kg_disease_symptoms
+  - kg_exam_meaning
+  - task_remind
+  - task_medication
+  - task_appointment
+  - mem_entity_to_time
+  - report_upload
+  - safety_drug
+  - life_headache
+
+intents:
+  chat_hello:
+    major: 闲聊
+    handler: chat_hello
+    rule_keywords: ["你好", "嗨", "在吗"]
+    slots: []
+  kg_part_diseases:
+    major: 公共知识问答
+    handler: kg_part_diseases
+    rule_keywords: ["头部", "有哪些病", "常见病"]
+    slots: ["部位"]
+  kg_disease_symptoms:
+    major: 公共知识问答
+    handler: kg_disease_symptoms
+    rule_keywords: ["症状", "胃炎"]
+    slots: ["疾病"]
+  kg_exam_meaning:
+    major: 公共知识问答
+    handler: kg_exam_meaning
+    rule_keywords: ["血常规", "检查", "查什么"]
+    slots: ["检查"]
+  task_remind:
+    major: 具体任务
+    handler: task_remind
+    rule_keywords: ["提醒", "复查"]
+    slots: []
+  task_medication:
+    major: 具体任务
+    handler: task_medication
+    rule_keywords: ["吃药", "用药"]
+    slots: []
+  task_appointment:
+    major: 具体任务
+    handler: task_appointment
+    rule_keywords: ["挂号", "预约"]
+    slots: []
+  mem_entity_to_time:
+    major: 个人记忆问答
+    handler: mem_entity_to_time
+    rule_keywords: ["我说过", "哪里不舒服", "记得"]
+    slots: []
+  report_upload:
+    major: 报告指标解读
+    handler: report_upload
+    rule_keywords: ["化验单", "报告", "指标"]
+    slots: []
+  safety_drug:
+    major: 风险拦截
+    handler: safety_drug
+    rule_keywords: ["药", "几次", "剂量"]
+    slots: []
+  life_headache:
+    major: 近况陈述
+    handler: life_headache
+    rule_keywords: ["头疼", "好几天"]
+    slots: []
+
+extra_bind_handlers: []

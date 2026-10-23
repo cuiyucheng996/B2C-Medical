@@ -167,6 +167,7 @@
       <button type="button" class="on" data-tab="kb">公共知识库</button>
       <button type="button" data-tab="ragflow">手册入库</button>
       <button type="button" data-tab="ragas">RAGAS</button>
+      <button type="button" data-tab="inspect">Inspect Agent</button>
       <button type="button" data-tab="file">上传文件</button>
       <button type="button" data-tab="memory">个人记忆</button>
       <button type="button" data-tab="intent">意图识别</button>
@@ -585,6 +586,41 @@
       </div>
     </section>
 
+    <section id="tab-inspect" class="hidden">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">Inspect AI 状态</h2>
+        <p class="hint">基于 <code>inspect-ai</code> 的 Agent 测评：数据集 → 自定义 Solver（走陪聊同一套分类/图）→ Scorer。日志目录可在本机用 <code>inspect view</code> 打开。</p>
+        <div class="meta" id="inspectStatusMeta">加载中…</div>
+        <button type="button" class="ghost" id="btnInspectReload">刷新</button>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">运行测评</h2>
+        <div class="pick" style="grid-template-columns:1fr auto auto auto">
+          <select id="inspectTask"></select>
+          <label class="hint">limit <input id="inspectLimit" type="number" min="1" max="200" placeholder="全部" style="width:72px" /></label>
+          <span></span>
+          <button type="button" class="act" id="btnInspectRun">运行 Inspect 测评</button>
+        </div>
+        <p id="inspectRunHint" class="hint" style="margin-top:10px">-</p>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">本次结果</h2>
+        <div id="inspectScoresBox" class="hint">（尚未执行）</div>
+        <table>
+          <thead><tr><th>样本</th><th>得分</th><th>说明</th><th>输入</th></tr></thead>
+          <tbody id="inspectSampleRows"><tr><td colspan="4">-</td></tr></tbody>
+        </table>
+        <pre class="ragas-out" id="inspectRawOut">（完整 JSON）</pre>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:16px;">历史日志</h2>
+        <table>
+          <thead><tr><th>文件</th><th>时间</th><th></th></tr></thead>
+          <tbody id="inspectLogRows"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="tab-ragas" class="hidden">
       <div class="card">
         <h2 style="margin:0 0 8px;font-size:16px;">状态</h2>
@@ -785,6 +821,10 @@
       if (location.hash === "#ragas") {
         const ragasBtn = document.querySelector('.tabs button[data-tab="ragas"]');
         if (ragasBtn) ragasBtn.click();
+      }
+      if (location.hash === "#inspect") {
+        const inspectBtn = document.querySelector('.tabs button[data-tab="inspect"]');
+        if (inspectBtn) inspectBtn.click();
       }
     }
 
@@ -1364,9 +1404,14 @@
         $("tab-kb").classList.toggle("hidden", btn.dataset.tab !== "kb");
         $("tab-ragflow").classList.toggle("hidden", btn.dataset.tab !== "ragflow");
         $("tab-ragas").classList.toggle("hidden", btn.dataset.tab !== "ragas");
+        $("tab-inspect").classList.toggle("hidden", btn.dataset.tab !== "inspect");
         if (btn.dataset.tab === "ragas" && !window._ragasLoaded) {
           window._ragasLoaded = true;
           loadRagasStatus().catch(() => {});
+        }
+        if (btn.dataset.tab === "inspect" && !window._inspectLoaded) {
+          window._inspectLoaded = true;
+          loadInspectStatus().catch(() => {});
         }
         $("tab-file").classList.toggle("hidden", btn.dataset.tab !== "file");
         $("tab-memory").classList.toggle("hidden", btn.dataset.tab !== "memory");
@@ -2010,6 +2055,132 @@
         pill(c.ok) + " " + esc(c.name) + " " + esc(c.detail)
       ).join("<br>");
     };
+    async function inspectApi(method, url, body) {
+      const opts = { method, headers: { "Content-Type": "application/json" } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const res = await fetch(url, opts);
+      const text = await res.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (_) {
+        throw new Error(text || res.statusText);
+      }
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+      return data;
+    }
+
+    function renderInspectStatus(st) {
+      const ia = st.inspect_ai || {};
+      const block = (st.blocking || []).map((b) => '<span class="ragas-err">' + esc(b) + "</span>").join("<br>");
+      $("inspectStatusMeta").innerHTML = [
+        "inspect-ai：" + (ia.installed ? "v" + esc(ia.version || "?") : "未安装"),
+        "日志目录：" + esc(st.log_dir || ""),
+        st.ready ? "就绪" : "未就绪",
+        block,
+      ].filter(Boolean).join(" · ");
+      const sel = $("inspectTask");
+      if (sel && sel.options.length === 0 && st.tasks) {
+        st.tasks.forEach((t) => {
+          const opt = document.createElement("option");
+          opt.value = t.id;
+          opt.textContent = t.title + " — " + (t.description || "").slice(0, 48);
+          sel.appendChild(opt);
+        });
+      }
+      const tbody = $("inspectLogRows");
+      if (!tbody) return;
+      const rows = st.recent_logs || [];
+      if (!rows.length) {
+        tbody.innerHTML = "<tr><td colspan='3'>尚无 .eval 日志</td></tr>";
+        return;
+      }
+      tbody.innerHTML = rows
+        .map(
+          (r) =>
+            "<tr><td>" +
+            esc(r.name) +
+            "</td><td>" +
+            esc(r.mtime) +
+            '</td><td><button type="button" class="ghost inspect-log-btn" data-name="' +
+            esc(r.name) +
+            '">查看</button></td></tr>"
+        )
+        .join("");
+      tbody.querySelectorAll(".inspect-log-btn").forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            const rep = await inspectApi("GET", "/api/eval/inspect/report/" + encodeURIComponent(btn.dataset.name));
+            renderInspectResult({ ok: true, summary: rep, metrics: rep.metrics, passed: 0, total: (rep.samples || []).length });
+            $("inspectRawOut").textContent = JSON.stringify(rep, null, 2);
+          } catch (e) {
+            $("inspectRunHint").textContent = e.message;
+          }
+        };
+      });
+    }
+
+    function renderInspectResult(data) {
+      if (!data.ok) {
+        $("inspectScoresBox").innerHTML = '<p class="ragas-err">' + esc(data.error || "失败") + "</p>";
+        $("inspectSampleRows").innerHTML = "<tr><td colspan='4'>-</td></tr>";
+        return;
+      }
+      const metrics = data.metrics || (data.summary && data.summary.metrics) || {};
+      $("inspectScoresBox").innerHTML =
+        "<pre class='ragas-out'>" +
+        esc(JSON.stringify({ passed: data.passed, total: data.total, metrics }, null, 2)) +
+        "</pre>";
+      const samples = (data.summary && data.summary.samples) || [];
+      $("inspectSampleRows").innerHTML = samples.length
+        ? samples
+            .map(
+              (s) =>
+                "<tr><td>" +
+                esc(s.id) +
+                "</td><td>" +
+                esc(s.score) +
+                "</td><td>" +
+                esc(s.explanation) +
+                "</td><td>" +
+                esc(String(s.input || "").slice(0, 80)) +
+                "</td></tr>"
+            )
+            .join("")
+        : "<tr><td colspan='4'>无样本</td></tr>";
+    }
+
+    async function loadInspectStatus() {
+      const st = await inspectApi("GET", "/api/eval/inspect/status");
+      renderInspectStatus(st);
+    }
+
+    $("btnInspectReload").onclick = () => loadInspectStatus().catch((e) => { $("inspectStatusMeta").textContent = e.message; });
+    $("btnInspectRun").onclick = async () => {
+      $("inspectRunHint").textContent = "测评中（意图/图任务可能较慢）…";
+      $("btnInspectRun").disabled = true;
+      $("inspectRawOut").textContent = "运行中…";
+      try {
+        const limitRaw = $("inspectLimit").value.trim();
+        const body = {
+          task: $("inspectTask").value || "intent_gold",
+          limit: limitRaw ? Number(limitRaw) : null,
+        };
+        const data = await inspectApi("POST", "/api/eval/inspect/run", body);
+        $("inspectRawOut").textContent = JSON.stringify(data, null, 2);
+        renderInspectResult(data);
+        $("inspectRunHint").textContent = data.ok
+          ? "完成 " + data.passed + "/" + data.total + " · 日志 " + (data.log_file || "")
+          : String(data.error || "失败");
+        await loadInspectStatus();
+      } catch (e) {
+        $("inspectRunHint").textContent = e.message;
+        $("inspectRawOut").textContent = e.message;
+      } finally {
+        $("btnInspectRun").disabled = false;
+      }
+    };
+
     async function ragasApi(method, url, body) {
       const opt = { method, headers: {} };
       if (body !== undefined) {

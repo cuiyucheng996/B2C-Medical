@@ -842,6 +842,45 @@ class RagasEvalBody(BaseModel):
     save_report: bool = True
 
 
+class InspectEvalBody(BaseModel):
+    task: str = "intent_gold"
+    limit: int | None = Field(default=None, ge=1, le=200)
+
+
+@app.get("/api/eval/inspect/status")
+def api_inspect_status() -> dict[str, Any]:
+    from algorithm.inspect_eval_pipeline import inspect_status
+
+    return inspect_status()
+
+
+@app.post("/api/eval/inspect/run")
+def api_inspect_run(body: InspectEvalBody) -> dict[str, Any]:
+    from algorithm.inspect_eval_pipeline import run_inspect_eval
+
+    try:
+        return run_inspect_eval(body.task, limit=body.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("inspect eval failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/eval/inspect/report/{name}")
+def api_inspect_report(name: str) -> dict[str, Any]:
+    from algorithm.inspect_eval_pipeline import load_eval_report
+
+    try:
+        return load_eval_report(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/api/eval/ragas/status")
 def api_ragas_status() -> dict[str, Any]:
     from algorithm.ragas_pipeline import default_paths, ragas_status
